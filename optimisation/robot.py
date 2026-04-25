@@ -147,7 +147,7 @@ class CtcRobot(ABC):
         #print(surface_points.size(),"surface_points")
         surface_points = torch.matmul(self.global_rotation, surface_points.transpose(1,2)).transpose(1,2) + self.global_translation
         #print(surface_points.size(),"surface_points", self.global_translation.size())
-        return surface_points.squeeze()*self.scale
+        return surface_points.squeeze(0)*self.scale  # (B,P,3) for B>1, (P,3) for B=1
 
     def get_fingertip_surface_points_updated(self, q = None):
         if q is not None:
@@ -273,8 +273,9 @@ class CtcRobot(ABC):
                 pos, quat = quat_pos_from_transform3d(self.current_status[name])
                 keypoints.append(pos)
         keypoints = torch.stack(keypoints, dim=1).to(self.device)
-        keypoints = torch.matmul(self.global_rotation, keypoints.transpose(1,2)).transpose(1,2) + self.global_translation.unsqueeze(1)
-        return keypoints
+        # global_translation is (B,1,3) — broadcasts correctly with (B,K,3) without extra unsqueeze
+        keypoints = torch.matmul(self.global_rotation, keypoints.transpose(1,2)).transpose(1,2) + self.global_translation
+        return keypoints  # (B, K, 3)
 
     def kinematics_distance(self, target, guide, q):
         robot_pose = self.get_keypoints(q).squeeze()
