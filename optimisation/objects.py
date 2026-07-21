@@ -211,12 +211,11 @@ class object_sdf():
         #hand contact points: 5*n*3
         hand_contact_points = torch.tensor(self.hand_model.get_contact_zones()).float().to(self.device)
         #obj contact points: 5*N*3
-        object_vert = self.obj_vert.unsqueeze(0).repeat(hand_contact_points.size(0),1,1)
+        obj_vert = self.obj_vert.squeeze(0) if self.obj_vert.dim() == 3 else self.obj_vert  # (N, 3)
+        object_vert = obj_vert.unsqueeze(0).repeat(hand_contact_points.size(0),1,1)
         nn = p3d.ops.knn_points(object_vert, hand_contact_points, K = 1)
         nn_idx = nn.dists[..., 0].argmin(dim=1)
-        #print(nn.dists.size())
-        #print(object_vert[:,nn_idx,:].size())
-        return self.obj_vert[nn_idx,:] 
+        return obj_vert[nn_idx, :] 
         #print(nn.idx[..., 0].size())
         #return nn
 
@@ -490,7 +489,8 @@ class object_sdf():
         self.contact_target = self.contact_target[reverse_indices]
 
 
-    def hand_contact_cluster_hdbscan(self):
+    def hand_contact_cluster_hdbscan(self, extra_contact_pack=None,
+                                     contact_pack=None, n_target=None):
 
         def filter_labels_by_threshold(labels, indices, threshold=4):
             unique_labels, counts = np.unique(labels, return_counts=True)
@@ -516,16 +516,38 @@ class object_sdf():
 
             return section_points
 
-        contact_pack = self.hand_model.get_contact_points_normals_packed()
+        # external pack = a per-hand contraction (e.g. the left hand passed in
+        # explicitly).  In that case we must NOT route into the kmeans/fingertip
+        # fallbacks below, because those read self.hand_model (the right hand) and
+        # would silently contract the wrong hand.
+        external = (contact_pack is not None) or (extra_contact_pack is not None)
+        n_target = self.robot_contact if n_target is None else n_target
+        if contact_pack is None:
+            contact_pack = self.hand_model.get_contact_points_normals_packed()
+        if extra_contact_pack is not None:
+            contact_pack = torch.cat([contact_pack, extra_contact_pack], dim=0)
         sdf_val, sdf_normal = self.pv_sdf(contact_pack[..., :3])
         hand_points, hand_normals = contact_pack[..., :3], contact_pack[..., 3:]
-        
+
         condition_sdf = sdf_val <= self.contact_threshold
         normal_similarity = torch.sum(hand_normals * sdf_normal, dim=-1)
         condition_antipodal = normal_similarity < self.cosine_threshold
         point_indices = torch.nonzero(condition_sdf & condition_antipodal, as_tuple=True)[0]
+        # Empty gating -> bail out before HDBSCAN .fit (which crashes on empty input).
+        if point_indices.numel() == 0:
+            if external:
+                self.contact_target = None
+                return 0
+            self.hand_contact_cluster_v2()
+            return 0
         contact_points = hand_points[point_indices]
         contact_normals = sdf_normal[point_indices]
+        # Keep the gated contacts (positions + object-normals) for the fallback
+        # used when the normal-clustering finds no cluster. The normals let the
+        # fallback recover an antipodal pair when one exists (unbalanced pinch
+        # that HDBSCAN missed) instead of a purely spatial split.
+        _gated_pts_t = contact_points.clone()
+        _gated_nrm_t = contact_normals.clone()
 
         contact_points_c = contact_points - contact_points.mean(dim=0)
         contact_normals = contact_normals.cpu().detach().numpy()    
@@ -558,7 +580,17 @@ class object_sdf():
         self.contact_normals = contact_normals
 
         if np.all(labels_n==-1) or np.all(labels_p==-1):
-            print("hdbscan failed, try kmeans")
+            print("hdbscan failed")
+            if external:
+                # Gated contacts exist but form no balanced two-sided normal
+                # structure (support / wrap / unbalanced pinch -> HDBSCAN gives
+                # all-noise). Don't drop the hand: position-based k-means fallback
+                # on the gated points so a genuinely-contacting hand still emits
+                # anchors. (genhand normal-clustering only succeeds for a balanced
+                # two-sided pinch; everything else lands here.)
+                self.contact_target = self._kmeans_contract_points(_gated_pts_t, n_target)
+                return 0
+            print("try kmeans")
             self.hand_contact_cluster_v2()
             return 0
         centroid_n = {}
@@ -578,7 +610,15 @@ class object_sdf():
                 p_cenroid_.append(np.mean(contact_points[indices[indices_p]], axis=0))
                 p_collector.append(contact_points[indices[indices_p]])
             centroid_p[labels] = np.array(p_cenroid_)
-            p_collection[labels] = np.array(p_collector)
+            # p_collector is a list of (n_i, 3) arrays with varying n_i (ragged).
+            # np.array(ragged) raises ValueError on modern NumPy (>=1.24), which
+            # silently killed the whole HDBSCAN contraction (caught by
+            # build_contact_target -> fingertip fallback). Build a 1D object array
+            # explicitly; downstream only iterates / vstacks these sub-arrays.
+            _pc = np.empty(len(p_collector), dtype=object)
+            for _i in range(len(p_collector)):
+                _pc[_i] = p_collector[_i]
+            p_collection[labels] = _pc
 
         self.n_components = n_components
         centroid_n_ = np.array([centroid_n[labels] for labels in uniq_labels_n]) # the normal cluster centroids array
@@ -598,34 +638,108 @@ class object_sdf():
             pca_base_list = np.vstack([p for i in uniq_labels_n for p in p_collection[i]])
             pca_base = np.vstack([pca_base, pca_base_list])
         else:
-            contact_0 = centroid_p[0].mean(axis=0) if centroid_p[0].shape[0] <= centroid_p[1].shape[0] else centroid_p[1].mean(axis=0)
-            contact_1 = centroid_p[1].mean(axis=0) if centroid_p[0].shape[0] <= centroid_p[1].shape[0] else centroid_p[0].mean(axis=0)
-            uniq_labels_n = np.delete(uniq_labels_n, np.where(uniq_labels_n == 0))
-            uniq_labels_n = np.delete(uniq_labels_n, np.where(uniq_labels_n == 1))
-            pca_base_ = p_collection[0] if centroid_p[0].shape[0] > centroid_p[1].shape[0] else p_collection[1]
+            # <=2 normal clusters. Use actual surviving labels (not literal 0/1):
+            # after valid_mask filtering a hand may yield a single cluster, or
+            # clusters labelled e.g. {0,2}. Referencing centroid_p[1] directly
+            # would KeyError. A single-hand contraction hits this often.
+            keys = list(uniq_labels_n)
+            a = keys[0]
+            b = keys[1] if len(keys) > 1 else keys[0]
+            contact_0 = centroid_p[a].mean(axis=0) if centroid_p[a].shape[0] <= centroid_p[b].shape[0] else centroid_p[b].mean(axis=0)
+            contact_1 = centroid_p[b].mean(axis=0) if centroid_p[a].shape[0] <= centroid_p[b].shape[0] else centroid_p[a].mean(axis=0)
+            pca_base_ = p_collection[a] if centroid_p[a].shape[0] > centroid_p[b].shape[0] else p_collection[b]
             pca_base = np.vstack(np.atleast_1d(pca_base_)).astype(np.float32)
+            uniq_labels_n = np.delete(uniq_labels_n, np.where(uniq_labels_n == a))
+            if b != a:
+                uniq_labels_n = np.delete(uniq_labels_n, np.where(uniq_labels_n == b))
 
             
-        if self.robot_contact == 2:
+        if n_target <= 1:
+            self.contact_target = torch.tensor(np.atleast_2d(contact_0)).to(self.device)
+
+        elif n_target == 2:
             self.contact_target = torch.tensor(np.vstack([contact_0, contact_1])).to(self.device)
-        
-        elif self.robot_contact > 2 and self.robot_contact <= n_normal_components:
+
+        elif n_target > 2 and n_target <= n_normal_components:
             self.contact_target = np.vstack([contact_0, contact_1])
-            for i in range(self.robot_contact - 2):
+            for i in range(n_target - 2):
                 idx = uniq_labels_n[i]
                 self.contact_target = np.vstack([self.contact_target, centroid_p_n[idx]])
             self.contact_target = torch.tensor(self.contact_target).to(self.device)
-        
-        elif self.robot_contact > 2 and self.robot_contact >= n_hand_contacts:
+
+        elif n_target > 2 and n_target >= n_hand_contacts:
             self.contact_target = torch.tensor(centroid_p_).to(self.device)
-        
-        elif self.robot_contact > 2 and self.robot_contact < n_hand_contacts and self.robot_contact > n_normal_components:
+
+        elif n_target > 2 and n_target < n_hand_contacts and n_target > n_normal_components:
             # print("pca_base", pca_base)
-            contact_2 = find_n_section_pca(pca_base, self.robot_contact)
+            contact_2 = find_n_section_pca(pca_base, n_target)
             self.contact_target = torch.tensor(np.vstack([contact_0, contact_2]), dtype=torch.float32).to(self.device)
 
 
         print(self.contact_target)
+
+    def _gate_contacts(self, contact_pack):
+        """Apply contact gating to a packed (N,6) hand pack: keep points that
+        touch the object (SDF <= contact_threshold) AND press into it (per-point
+        antipodal: hand_normal . object_normal < cosine_threshold).
+        Returns (P, N): gated positions and OBJECT-surface normals (tensors)."""
+        pos, hand_n = contact_pack[..., :3], contact_pack[..., 3:]
+        sdf, obj_n = self.pv_sdf(pos)
+        sdf = sdf.reshape(-1)
+        keep = (sdf <= self.contact_threshold) & \
+               (torch.sum(hand_n * obj_n, dim=-1) < self.cosine_threshold)
+        return pos[keep], obj_n[keep]
+
+    def contract_kmeans(self, contact_pack, n_target, w_normal=2.0):
+        """Robust contraction: gate contacts, then k-means in the joint
+        [normalized position, w_normal * object-normal] space into n_target
+        clusters, returning each cluster's position centroid snapped to the
+        nearest gated contact (on-surface, object-centric frame).
+
+        The object-normal term makes opposing-side contacts (antipodal grasp)
+        fall into different clusters -- robustly, with NO noise dropping (unlike
+        the genhand dual-HDBSCAN). When normals are uniform (support/wrap),
+        position drives the split. Generalises to any n_target / input set.
+        Returns (k,3) tensor, or None if no gated contact (hand not touching).
+        """
+        P, N = self._gate_contacts(contact_pack)
+        if P.shape[0] == 0:
+            return None
+        k = int(min(n_target, P.shape[0]))
+        if k <= 1:
+            c = P.mean(dim=0)
+            return P[(P - c).norm(dim=-1).argmin()].unsqueeze(0).to(torch.float32)
+        N = N / (N.norm(dim=-1, keepdim=True) + 1e-9)
+        Pn = (P - P.mean(dim=0)) / (P.std() + 1e-6)            # ~unit scale (match normals)
+        feat = torch.cat([Pn, w_normal * N], dim=-1).detach().cpu().numpy()
+        labels = KMeans(n_clusters=k, n_init=10, random_state=0).fit(feat).labels_
+        out = []
+        for c in range(k):
+            grp = P[labels == c]
+            if grp.shape[0] == 0:
+                continue
+            centroid = grp.mean(dim=0)
+            out.append(grp[(grp - centroid).norm(dim=-1).argmin()])   # snap to real contact
+        return torch.stack(out).to(torch.float32)
+
+    def _kmeans_contract_points(self, points_t, n_target):
+        """Position-based contraction fallback (used when the normal-clustering
+        finds no balanced two-sided structure, e.g. a supporting/wrapping hand).
+
+        K-means the gated contact points into n_target clusters and snap each
+        centroid to the nearest real contact point (keeps anchors on-surface).
+        Returns (k, 3) tensor in the object-centric frame, or None if empty.
+        """
+        pts = points_t.detach().cpu().numpy()
+        if pts.shape[0] == 0:
+            return None
+        k = int(min(n_target, pts.shape[0]))
+        if k <= 1:
+            return torch.tensor(pts[:1], dtype=torch.float32, device=self.device)
+        centers = KMeans(n_clusters=k, n_init=10, random_state=0).fit(pts).cluster_centers_
+        snapped = np.stack([pts[int(np.argmin(np.linalg.norm(pts - c, axis=1)))]
+                            for c in centers])
+        return torch.tensor(snapped, dtype=torch.float32, device=self.device)
 
     def _select_contact_targets_by_count(self, contact_points, contact_normals, target_count):
         """Select representative contact points without cross-finger clustering."""
@@ -704,10 +818,13 @@ class object_sdf():
         )
         print(self.contact_target)
 
-    def build_contact_target(self, method="hdbscan"):
+    def build_contact_target(self, method="hdbscan", extra_contact_pack=None,
+                             contact_pack=None, n_target=None):
+        external = (contact_pack is not None) or (extra_contact_pack is not None)
         try:
             if method == "hdbscan":
-                self.hand_contact_cluster_hdbscan()
+                self.hand_contact_cluster_hdbscan(extra_contact_pack=extra_contact_pack,
+                                                  contact_pack=contact_pack, n_target=n_target)
             elif method == "mano":
                 self.hand_contact_cluster_mano_direct()
             elif method == "kmeans":
@@ -718,10 +835,16 @@ class object_sdf():
                     "Use one of: hdbscan, mano, kmeans.".format(method)
                 )
             if self.contact_target is None or self.contact_target.numel() == 0:
-                self._fallback_contact_target()
+                # external (per-hand) pack: leave it None so the caller skips this
+                # hand. _fallback_contact_target reads self.hand_model (right hand).
+                if not external:
+                    self._fallback_contact_target()
         except Exception as exc:
             print(f"[object_sdf] contact target fallback due to: {exc}")
-            self._fallback_contact_target()
+            if external:
+                self.contact_target = None
+            else:
+                self._fallback_contact_target()
 
     def sdf_loss(self, points):
         sdf_val = SDFLayer.apply(points, self.pv_sdf)

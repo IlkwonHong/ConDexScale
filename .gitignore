@@ -1,6 +1,8 @@
 dataset/
 demo/
 network/
+.claude/
+CLAUDE.md
 
 
 
@@ -29,6 +31,15 @@ urdf/*
 
 # local workflow ignores
 optimisation/viz_tool.py
+
+# visualization artifacts (large, regenerable)
+md_claude/**/*.html
+md_claude/
+
+# scratch / temp outputs (project-local tmp)
+tmp/
+data/
+extlib/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

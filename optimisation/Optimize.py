@@ -90,8 +90,13 @@ class Optimization:
                  sdf_query_fn=None,
                  sdf_prepare_fn=None,
                  obj_scale: float = 1.0,
+                 anchors_per_hand: int = None,
                  ):
         self.robot = robot
+        # genhand anchors per hand for the bimanual label (human_anchor).
+        # Default = robot.contacts_num (Robotiq -> 2 per hand -> 4 total).
+        self.anchors_per_hand = (anchors_per_hand if anchors_per_hand is not None
+                                 else self.robot.contacts_num)
         self.dataset = dataset
         # Keep single-process loading for broad compatibility in constrained runtimes.
         self.dataloader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
@@ -471,6 +476,7 @@ class Optimization:
         """
         converge = False
         converge_gate = False
+        collision = torch.zeros(1, device=self.device)
         dead_end = 0
         if self.robot.robot_model == "Shadow" or self.robot.robot_model == "Allegro":
             dead_end = 100
@@ -522,6 +528,7 @@ class Optimization:
         This version of the optimization function introduces the collision check in the later stage of the optimization process.
         """
         converge = False
+        collision = torch.zeros(1, device=self.device)
         print('q',self.q)
         for i, _ in enumerate(range(self.maximum_iter[2])):
             if converge:
@@ -898,21 +905,192 @@ class Optimization:
         try:
             self.initialization(obj_mesh_v, obj_mesh_f, obj_centre, hand_mesh_v, hand_mesh_f, joints, hand_transformation)
             data_stage1 = self.first_stage_opt_wo_gq(test_bar)
-            data_stage2 = self.second_stage_opt_wo_gq(test_bar)
+            data_stage2 = self.second_stage_opt_wo_gq_refine(test_bar)
             file_name = str(idx)+"_"+self.robot.robot_model + "_" + "0_"+ "mu_%.1f" %self.obj_model.loss.mu.item()
             data_stage1.update(data_stage2)
             data_stage1["data_sample_config"] = self.dataset.data_sample
+            data_stage1["file_name"] = input_pack.get("file_name")
+            data_stage1["ycb_id"] = input_pack["ycb"].item() if hasattr(input_pack.get("ycb"), "item") else input_pack.get("ycb")
+            # Human grasp data — input side for Module B training
+            data_stage1["obj_center"] = obj_pack["centre"].cpu().tolist()      # (3,) object center in hand-local frame
+            data_stage1["obj_transform"] = obj_pack["pose"].cpu().tolist()    # (4, 4) object pose in camera frame (R|t)
+            data_stage1["hand_joints"] = mano_pack["joint"].cpu().tolist()   # (21, 3)
+            # Per-finger contact: for each of 5 finger zones, find the zone point closest to obj surface
+            _finger_names = ["index", "middle", "ring", "little", "thumb"]
+            _hand_zones = self.obj_model.hand_model.get_contact_zones().to(torch.float32).to(self.device)  # (5, 16, 3)
+            _sdf_vals, _ = self.obj_model.pv_sdf(_hand_zones)            # (5, 16)
+            _closest = _sdf_vals.argmin(dim=1)                            # (5,)
+            _finger_contacts = _hand_zones[torch.arange(5, device=self.device), _closest]  # (5, 3)
+            data_stage1["human_finger_contacts"] = {
+                name: _finger_contacts[i].detach().cpu().tolist()
+                for i, name in enumerate(_finger_names)
+            }
+            # HDBSCAN clustered contact anchor — the target the robot optimises toward
+            if self.obj_model.contact_target is not None:
+                data_stage1["human_anchor"] = self.obj_model.contact_target.detach().cpu().tolist()  # (M, 3)
         except Exception as e:
             traceback.print_exc()
             print(e)
             file_name = str(idx)+"_"+self.robot.robot_model + "_" + "0_"+ "mu_%.1f" %self.obj_model.loss.mu.item()
-            data_stage1 = {"error": str(e), "data_sample_config": self.dataset.data_sample, "idx": idx}
+            data_stage1 = {"error": str(e), "data_sample_config": self.dataset.data_sample, "idx": idx,
+                           "file_name": input_pack.get("file_name"), "ycb_id": input_pack["ycb"].item() if hasattr(input_pack.get("ycb"), "item") else input_pack.get("ycb")}
             # self.result_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)))
         self.write_json(data_stage1, file_name)
         if self.visualize:
             self.show_image(input_pack["color_img"])
             self.draw()
-        
+
+    def _contract_single_hand(self, contact_pack, n_target):
+        """Contract ONE hand's (80,6) packed contacts -> (k,3) anchors in the
+        object-centric frame, or None if no touching contact.
+
+        Robust joint position+normal k-means (object_sdf.contract_kmeans) --
+        replaces the fragile genhand dual-HDBSCAN for the bimanual label:
+        captures antipodal grasps (opposing object-normals -> different clusters,
+        no noise dropping) and falls to spatial split for support/wrap. Uses the
+        shared object SDF; does not mutate hand_model or contact_target.
+        """
+        out = self.obj_model.contract_kmeans(contact_pack, n_target)
+        if out is None or out.numel() == 0:
+            return None
+        return out.detach().to(torch.float32)
+
+    def _fallback_anchor_from_fingertips(self):
+        """Both hands empty (neither touches under gating, very rare): use the
+        right-hand fingertips so human_anchor is never an empty label."""
+        ft = self.obj_model.hand_model.get_fingertips()  # (1,5,3) object-centric
+        if ft.dim() == 3:
+            ft = ft.squeeze(0)
+        k = min(self.anchors_per_hand, ft.size(0))
+        return ft[:k].to(torch.float32)
+
+    def run_idx_json_bimanual(self, idx):
+        """Like run_idx_json but handles bimanual Arctic data.
+
+        Combines left+right hand contact zones before HDBSCAN so that
+        human_anchor reflects contacts from both hands.  The robot
+        optimisation still runs with the right-hand model as the primary
+        kinematic chain.
+        """
+        from optimisation.robot import human as HumanModel
+        test_bar = tqdm(enumerate(self.dataloader), total=len(self.dataloader), smoothing=0.9)
+
+        input_pack, obj_pack, mano_pack = self.dataset[idx]
+        self._prepare_sdf_context(input_pack)
+
+        obj_mesh_v = obj_pack["verts"].to(self.device).unsqueeze(0)
+        obj_mesh_f = obj_pack["faces"].to(self.device).unsqueeze(0)
+        obj_centre = obj_pack["centre"].to(self.device).unsqueeze(0)
+        right_v    = mano_pack["verts"].to(self.device).unsqueeze(0)
+        right_f    = mano_pack["faces"].to(self.device).unsqueeze(0)
+        right_j    = mano_pack["joint"].to(self.device).unsqueeze(0)
+        right_t    = mano_pack["transformation"].to(self.device).unsqueeze(0)
+
+        try:
+            # initialization() centres everything on obj_centre and runs
+            # build_contact_target() with the right-hand model only.
+            self.initialization(obj_mesh_v, obj_mesh_f, obj_centre,
+                                right_v, right_f, right_j, right_t)
+
+            # Load left hand into a temporary human model with the same
+            # obj-centric offset that initialization() applied to the right.
+            center_for_opt = obj_centre  # (1, 3)
+            left_v_c = mano_pack["verts_left"].to(self.device).unsqueeze(0) - center_for_opt
+            left_j_c = mano_pack["joint_left"].to(self.device).unsqueeze(0) - center_for_opt
+
+            left_human = HumanModel(device=self.device)
+            left_human.load_hand_mesh(
+                mesh_v=left_v_c,                                        # (1, 778, 3)
+                mesh_f=mano_pack["faces"].to(self.device).unsqueeze(0), # (1, F, 3)
+                joints=left_j_c,
+            )
+            extra_pack_raw = left_human.get_contact_points_normals_packed()  # (80, 6)
+            # MANO left mesh shares the same face winding as right but has mirrored
+            # geometry, so pytorch3d computes inward-pointing vertex normals for the
+            # left hand.  Negate the normal component so the antipodal condition in
+            # hand_contact_cluster_hdbscan is evaluated correctly.
+            extra_pack = torch.cat(
+                [extra_pack_raw[:, :3], -extra_pack_raw[:, 3:]], dim=1
+            )
+
+            # Per-hand genhand contraction -> human_anchor label.
+            # Each hand goes through the SAME gated genhand HDBSCAN
+            # (build_contact_target), so only fingers actually touching the
+            # object contribute. anchors_per_hand controls the count per hand
+            # (Robotiq default = 2 -> up to 4 total). extra_pack is the left
+            # hand's pack with normals flipped (loaded above).
+            aph = self.anchors_per_hand
+            right_pack = self.obj_model.hand_model.get_contact_points_normals_packed()
+            anchors_r = self._contract_single_hand(right_pack, n_target=aph)  # (kr,3)|None
+            anchors_l = self._contract_single_hand(extra_pack,  n_target=aph)  # (kl,3)|None
+            _parts = [a for a in (anchors_r, anchors_l) if a is not None]
+            if _parts:
+                human_anchor = torch.cat(_parts, dim=0)            # object-centric
+            else:
+                human_anchor = self._fallback_anchor_from_fingertips()
+
+            # Output = the contracted bimanual label + inputs only. No force
+            # closure / single-Robotiq robot grasp (that was a single-hand-genhand
+            # leftover, removed). human_anchor = anchors_per_hand contracted
+            # arm-contact anchors PER HAND -> 2 * anchors_per_hand total
+            # (currently anchors_per_hand=2 -> 4; the count is a variable).
+            data_stage1 = {}
+
+            file_name = (
+                str(idx) + "_" + self.robot.robot_model
+                + "_0_mu_%.1f" % self.obj_model.loss.mu.item()
+            )
+            data_stage1["data_sample_config"] = self.dataset.data_sample
+            data_stage1["file_name"]  = input_pack.get("file_name")
+            data_stage1["obj_name"]   = input_pack.get("obj_name")
+            data_stage1["obj_arti_angle"] = obj_pack.get("arti_angle")
+            data_stage1["obj_center"]    = obj_pack["centre"].cpu().tolist()
+            data_stage1["obj_transform"] = obj_pack["pose"].cpu().tolist()
+
+            # Right-hand finger contacts
+            _finger_names = ["index", "middle", "ring", "little", "thumb"]
+            _rzones = self.obj_model.hand_model.get_contact_zones().to(torch.float32).to(self.device)
+            _rsdf, _ = self.obj_model.pv_sdf(_rzones)
+            _rcontact = _rzones[torch.arange(5, device=self.device), _rsdf.argmin(dim=1)]
+            data_stage1["hand_joints"] = mano_pack["joint"].cpu().tolist()
+            data_stage1["human_finger_contacts"] = {
+                name: _rcontact[i].detach().cpu().tolist()
+                for i, name in enumerate(_finger_names)
+            }
+
+            # Left-hand finger contacts (using the obj-centred left human model)
+            _lzones = left_human.get_contact_zones().to(torch.float32).to(self.device)
+            _lsdf, _ = self.obj_model.pv_sdf(_lzones)
+            _lcontact = _lzones[torch.arange(5, device=self.device), _lsdf.argmin(dim=1)]
+            data_stage1["hand_joints_left"] = mano_pack["joint_left"].cpu().tolist()
+            data_stage1["human_finger_contacts_left"] = {
+                name: _lcontact[i].detach().cpu().tolist()
+                for i, name in enumerate(_finger_names)
+            }
+
+            # Per-hand genhand contraction (object-centric): anchors_per_hand
+            # arm-contact anchors per hand, concatenated (2*anchors_per_hand total).
+            data_stage1["human_anchor"] = human_anchor.cpu().tolist()
+
+        except Exception as e:
+            traceback.print_exc()
+            print(e)
+            file_name = (
+                str(idx) + "_" + self.robot.robot_model
+                + "_0_mu_%.1f" % self.obj_model.loss.mu.item()
+            )
+            data_stage1 = {
+                "error": str(e),
+                "data_sample_config": self.dataset.data_sample,
+                "idx": idx,
+                "file_name": input_pack.get("file_name"),
+                "obj_name": input_pack.get("obj_name"),
+            }
+
+        self.write_json(data_stage1, file_name)
+        if self.visualize:
+            self.draw()
+
     def run_wo_gq(self, restart = None, indices = None):
         if restart is not None:
             sampler = SubsetRestartSampler(restart, self.dataset.__len__())
