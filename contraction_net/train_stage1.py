@@ -10,6 +10,7 @@ import time
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Subset
 
@@ -54,7 +55,15 @@ def main():
     ap.add_argument("--n-patch", type=int, default=128,
                     help="패치 해상도. 128 외의 값이면 patch_cache_<n>·patch_contacts_<n> 사용")
     ap.add_argument("--out", default="checkpoints/stage1")
+    ap.add_argument("--train-frac", type=float, default=1.0,
+                    help="학습 파지 중 물체 해시 기준 고정 부분집합 비율 (데이터 규모 시험, EXP-005). "
+                         "부분집합은 중첩됨: 0.25 ⊂ 0.5 ⊂ 1.0, 시드와 무관")
+    ap.add_argument("--seed", type=int, default=None,
+                    help="모델 초기값·배치 순서 시드 (None = 기존 동작, 고정 안 함)")
     args = ap.parse_args()
+    if args.seed is not None:
+        import random
+        random.seed(args.seed); np.random.seed(args.seed); torch.manual_seed(args.seed)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     out = ROOT / args.out
@@ -69,12 +78,23 @@ def main():
         kw["patch_contacts_dir"] = base / f"patch_contacts_{args.n_patch}"
     tr = Stage1Dataset(split="train", augment=True, **kw)
     va = Stage1Dataset(split="val", augment=False, **kw)
+    if args.train_frac < 1.0:
+        import hashlib
+        def _u(gid):    # 물체 단위 [0,1) — 검증 분리 해시와 다른 소금
+            oid = tr.obj_of[gid][1]
+            return int(hashlib.md5(f"frac:{oid}".encode()).hexdigest()[:8], 16) / 16**8
+        keep = [i for i, (gid, _e) in enumerate(tr.samples) if _u(gid) < args.train_frac]
+        print(f"--train-frac {args.train_frac}: 학습 파지 {len(tr.samples):,} → {len(keep):,}", flush=True)
+        tr = Subset(tr, keep)
     if args.smoke:
         tr = Subset(tr, range(0, len(tr), max(1, len(tr) // 2000)))
         va = Subset(va, range(0, len(va), max(1, len(va) // 400)))
         args.epochs = 2
     n_tr = len(tr)
-    vocab_n = len((tr.dataset if isinstance(tr, Subset) else tr).vocab)
+    base_tr = tr
+    while isinstance(base_tr, Subset):
+        base_tr = base_tr.dataset
+    vocab_n = len(base_tr.vocab)
     print(f"train {n_tr:,} / val {len(va):,} 파지, 클래스 {vocab_n}, device={device}", flush=True)
 
     pw = args.workers > 0    # 워커 유지 — 물체 캐시가 에폭마다 초기화되는 것 방지
@@ -84,7 +104,7 @@ def main():
     dl_va = DataLoader(va, batch_size=args.batch, num_workers=args.workers,
                        persistent_workers=pw)
 
-    vocab = (tr.dataset if isinstance(tr, Subset) else tr).vocab
+    vocab = base_tr.vocab
     model = (Stage1NetV2(vocab, n_patch=args.n_patch) if args.arch == "v2"
              else Stage1Net(vocab_n, n_patch=args.n_patch)).to(device)
     if args.resume:

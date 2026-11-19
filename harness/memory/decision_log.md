@@ -44,3 +44,11 @@ Template:
 - Evidence (paths / run IDs): harness/research/IDEA-001-imitate-verified-gt/experiments/EXP-003-coarse-candidate-precheck/analysis.md, harness/research/IDEA-001-imitate-verified-gt/experiments/EXP-004-c128-learnability/plan.md
 - What would change our mind: 모델 A가 세 팔 모두 정답과 같은 점을 고르는 비율이 25% 미만이면 정답이 일관되어도 네트워크가 못 맞히는 것으로 본다. A와 B의 차이가 5%포인트 미만이면 정답의 일관성은 원인이 아니라고 본다.
 - Next action: 구현과 연기 시험, 정확한 실행 명령을 보여 주고 긴 실행의 승인을 받는다.
+
+- Date: 2026-11-20
+- Idea / Experiment ID: IDEA-001-imitate-verified-gt / EXP-005-net1-data-scaling, EXP-006-gt-v2-pilot
+- Researcher decision: GT 를 새로 만든다. 게이트는 법선 힘 제어(하이브리드) + 외란별 최적 배분, 채점은 논문 III-B 의 ℓ∞ 여유 ρ, 파티션마다 3시드 최댓값. 방식과 규모를 정하기 전에 EXP-005(데이터 규모 시험)와 EXP-006(1,000 파지 시범 생성)을 먼저 한다.
+- Rationale and rejected alternatives: 2026-11-15~19 진단에서 게이트 불합격의 약 절반이 위치 서보의 접촉 놓침이었고 힘 제어로 회복되었다. 3시드 최댓값은 EXP-001/002 의 탐색 노이즈 대책(연구자 제안). 전량 생성 추정(ρ64 + 3시드 약 310시간)이 커서 실측과 데이터 필요량 확인을 먼저 한다. 8꼭짓점(힘만) 축약형은 토크가 최약 방향인 경우가 많아 Claude 가 비권장.
+- Evidence (paths / run IDs): scratchpad/2026-11-gate-diagnosis/, EXP-005/006 plan.md
+- What would change our mind: EXP-005 에서 데이터가 평평하면 생성 규모를 줄인다. EXP-006 에서 two_stage 의 ρ0 가 rho64 의 0.95배 이상이면 two_stage 로 시간을 줄인다.
+- Next action: 구현·연기 시험 → EXP-005, EXP-006 실행 → 결과 보고 후 연구자가 전량 재생성 방식을 정한다.

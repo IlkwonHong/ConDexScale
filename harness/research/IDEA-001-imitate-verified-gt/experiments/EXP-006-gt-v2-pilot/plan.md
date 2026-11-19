@@ -1,0 +1,11 @@
+# EXP-006-gt-v2-pilot: Experiment plan
+- **Status:** APPROVED (2026-11-20). 구현·연기 시험 뒤 실행.
+- **Associated idea (folder):** IDEA-001-imitate-verified-gt
+- **Question:** GT v2 (ρ0 채점 + 하이브리드 게이트 + 3시드 최댓값) 의 생성 시간과 품질이 방식별로 얼마인가 → 재생성 방식·규모 결정용.
+- **Background:** 2026-11-15~19 게이트 진단 (스크립트 scratchpad/2026-11-gate-diagnosis/): 위치 서보 게이트의 불합격 약 절반이 접촉 놓침 결함, 법선 힘 제어 + 외란별 최적 배분으로 불합격 16 중 8 회복, 합격 10/10 유지.
+- **Changes (모두 기본값 꺼짐):** runner_batched `_rho_many`, runner_multi `--score {alpha,rho64,two_stage}` `--seed`, sim_eval `normal_mode="force"`, gate_runner ρ 정점 방향 옵션.
+- **Runs:** 학습 쪽 고정 1,000 파지에서 alpha / rho64 / two_stage 각 1시드; 그중 200 파지 3시드; rho64 결과에 하이브리드 게이트 vs 서보 게이트.
+- **Metrics:** 파지당 시간(단계별), 10만 파지 환산 시간, 고른 배치의 ρ0 (two_stage ÷ rho64), 3시드 최댓값의 1시드 대비 ρ0 상승과 시드 간 일치, 게이트 합격률·시간.
+- **Verification before runs:** `_rho_many` ρ0 == compute_rho(w_req=0) (오차 <1e-4), `--score alpha --seed 0` 이 기존 레코드 재현 (50 파지), servo 게이트 재현, force 게이트로 진단 표본 재현.
+- **Budget / stop:** 예상 약 4시간, 6시간 넘으면 멈추고 보고. 전량 재생성은 결과 보고 후 따로 승인.
+- **Approval record:** (연구자 확인 필요) 2026-11-20 연구자 지시 + 계획 승인.
