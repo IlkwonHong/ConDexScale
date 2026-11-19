@@ -49,6 +49,10 @@ class SimConfig:
     rot_tol_deg: float = 20.0
     start_gap: float = 0.002      # 팁 초기 표면 간격 [m]
     density: float = 200.0        # 물체 밀도 (중력 0 이라 관성 스케일만 결정)
+    normal_mode: str = "servo"    # "servo" = 기존 (법선 위치 서보 + 힘 상한)
+                                  # "force" = 하이브리드: 정착은 서보, 외란 시작 순간 서보를 끄고
+                                  #   법선 힘 모터에 외란별 최적 배분 법선력을 명령 (접선은 고정).
+                                  #   2026-11 게이트 진단: 서보는 외란 중 접촉을 놓쳐 불합격 절반이 결함
 
 
 def _object_xml(object_spec):
@@ -111,6 +115,10 @@ def build_scene_xml(object_spec, anchor_pos, anchor_normal, cfg: SimConfig):
         for i in range(len(anchor_pos)):
             actuators.append(f'<motor joint="latx{i}" gear="1"/>')
             actuators.append(f'<motor joint="laty{i}" gear="1"/>')
+    if cfg.normal_mode == "force":
+        # 법선 힘 모터 — 액추에이터 목록의 맨 끝 N 개 (서보는 외란 중 이득 0 으로 끔)
+        for i in range(len(anchor_pos)):
+            actuators.append(f'<motor joint="press{i}" gear="1" ctrlrange="0 {cfg.f_cmd}"/>')
 
     return f"""
 <mujoco>
@@ -214,7 +222,7 @@ def _record_contacts(model, data, n_tips, obj_body):
 
 def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
                            r_obj, cfg: SimConfig = None, preload_forces=None,
-                           force_fn=None, seed=0, contact_log=None):
+                           force_fn=None, seed=0, contact_log=None, normal_alloc=None):
     """여러 외란 방향을 한 모델로 측정 (모델 빌드·메쉬 로드를 방향 간 재사용).
 
     dirs: [D, 6] (metric 규약), levels: [D, L] 방향별 테스트 α 그리드 (오름차순).
@@ -222,6 +230,8 @@ def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
     대칭 배치용). 비대칭 다중 앵커는 균등 포화가 물체를 밀어버리므로(파일럿
     진단) LP 평형 배분을 넘겨야 한다. 목표 힘은 접촉 강성을 몰라도 되도록
     정착 중 피드백(측정 힘과의 차이로 서보 목표를 보정)으로 맞춘다.
+    normal_alloc: cfg.normal_mode == "force" 일 때 필수. (방향 번호 d, 배율 a) → 팁별 법선력 [N] (뉴턴).
+      외란 시작 순간 서보를 끄고 이 힘을 법선 힘 모터에 명령한다 (gate_runner._normal_alloc_fn).
     contact_log: dict 를 주면 정착 직후(외란 전) 팁↔물체 실제 접촉(_record_contacts)과
     팁 힘을 채워 넣는다 (dirs 가 비어 있으면 정착·기록만 하고 끝난다).
     반환: (alpha_sim [D], settled bool, 예압 달성도, 불안정 방향 수).
@@ -233,6 +243,16 @@ def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
     obj_body = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "object")
 
     n_tips = len(anchor_pos)
+    force_mode = cfg.normal_mode == "force"
+    if force_mode and normal_alloc is None:
+        raise ValueError('normal_mode="force" 에는 normal_alloc 이 필요하다')
+    servo_gain0 = model.actuator_gainprm[:n_tips, 0].copy()
+    servo_bias0 = model.actuator_biasprm[:n_tips, :3].copy()
+
+    def servo(on):
+        model.actuator_gainprm[:n_tips, 0] = servo_gain0 if on else 0.0
+        model.actuator_biasprm[:n_tips, :3] = servo_bias0 if on else 0.0
+
     nrm_u = np.asarray(anchor_normal, dtype=np.float64)
     nrm_u = nrm_u / np.linalg.norm(nrm_u, axis=1, keepdims=True)
     active = bool(cfg.active and force_fn is not None)
@@ -271,10 +291,14 @@ def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
     preload_frac_meas = 0.0            # 정착 직후 팁 힘 / 상한 (메쉬 불일치 진단용)
 
     def settle():
+        servo(True)
         mujoco.mj_resetData(model, data)
         data.ctrl[:n_tips] = press_ctrl
-        if model.nu > n_tips:
-            data.ctrl[n_tips:] = lat_settle
+        n_lat = model.nu - n_tips - (n_tips if force_mode else 0)
+        if n_lat > 0:
+            data.ctrl[n_tips:n_tips + n_lat] = lat_settle
+        if force_mode:
+            data.ctrl[model.nu - n_tips:] = 0.0
         steps = int(cfg.settle_steps * cfg.timestep / model.opt.timestep)
         for _ in range(steps):
             mujoco.mj_step(model, data)
@@ -313,6 +337,11 @@ def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
                 for i, (ax, ay) in enumerate(tip_axes):
                     data.ctrl[n_tips + 2 * i] = float(ft[i] @ ax)
                     data.ctrl[n_tips + 2 * i + 1] = float(ft[i] @ ay)
+            if force_mode:
+                fn_cmd = np.clip(np.asarray(normal_alloc(d, a), dtype=np.float64), 0.0, cfg.f_cmd)
+                servo(False)
+                data.ctrl[:n_tips] = 0.0
+                data.ctrl[model.nu - n_tips:] = fn_cmd
             data.xfrc_applied[obj_body, :3] = a * cfg.f_cmd * dirs[d, :3]
             data.xfrc_applied[obj_body, 3:] = a * cfg.f_cmd * r_obj * dirs[d, 3:]
             w_hold = _warn_count()

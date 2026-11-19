@@ -15,9 +15,9 @@ NEW = ROOT / "search_records_exp006_check"
 GL = Path("scratchpad/exp006/check_gids.txt")
 
 
-def load(d):
+def load(d, pattern="shard_*.npz"):
     out = {}
-    for f in sorted(d.glob("shard_*.npz")):
+    for f in sorted(d.glob(pattern)):
         z = np.load(f, allow_pickle=False)
         for i in range(len(z["grasp_id"])):
             k = (str(z["grasp_id"][i]), str(z["partition"][i]), round(float(z["pad_rel"][i]), 4))
@@ -32,7 +32,7 @@ if sys.argv[1] == "prepare":
     print(f"{len(gids)} gids")
 else:
     gids = set(GL.read_text().split())
-    old = {k: v for k, v in load(OLD).items() if k[0] in gids}
+    old = {k: v for k, v in load(OLD, "shard_0_part0.npz").items() if k[0] in gids}
     new = load(NEW)
     same_idx = sum(np.array_equal(old[k][0], new[k][0]) for k in old if k in new)
     missing = sum(k not in new for k in old)
