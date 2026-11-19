@@ -1,0 +1,14 @@
+# IDEA-NNN-short-slug: Title
+- **Status:** ACTIVE | PAUSED | DROPPED (promoted from memory/idea_backlog.md on YYYY-MM-DD)
+- **Origin:** researcher | Claude suggestion approved by researcher
+- **Original researcher intuition:**
+- **Scientific question:**
+- **Closest prior work (verified citations):**
+- **Novelty gap (hypothesis, not assertion):**
+- **Proposed mechanisms:**
+- **Strongest objections:**
+- **Falsifiable predictions:**
+- **Minimal discriminating experiment:**
+- **Own experiments (in experiments/):**
+- **Experiments referenced from other ideas (by EXP number):**
+- **Unresolved decisions for researcher:**

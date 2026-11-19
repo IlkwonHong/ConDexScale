@@ -1,0 +1,14 @@
+# IDEA-001-imitate-verified-gt: net2는 정답 위치 모방에 집중하고, 성공은 정답 품질로 해결한다
+- **Status:** ACTIVE (promoted from memory/idea_backlog.md on 2026-11-13)
+- **Origin:** researcher
+- **Original researcher intuition:** net2의 개선 목표를 시뮬레이션 합격이나 α(14개 방향으로 버틸 수 있는 힘 배율의 최솟값)가 비슷하게 나오는 것이 아니라, 정답(GT) 위치와 최대한 가깝게 나오는 것으로 둔다. 그 네트워크가 잘 되면 정답이 실제로도 성공하는 자리를 주도록 만들면 된다. 우선은 정답에서 물체 반경의 0.078배(표면점 한 칸) 이내에 드는 출력을 늘려야 한다.
+- **Scientific question:** (1) 네트워크 출력이 합격한 정답에 가까우면 그 출력도 합격하는가. (2) 지금 정답은 네트워크가 따라갈 수 있을 만큼 일관되게 정해지는가. (3) 정답을 "항상 합격하고, 입력이 같으면 같은 자리가 나오는" 것으로 만들 수 있는가.
+- **Closest prior work (verified citations):** Weisz & Allen, "Pose Error Robust Grasping from Contact Wrench Space Metrics", ICRA 2012 (문헌 목록 key `weisz-2012-poseerrorrobust`, verified). Mahler et al., "Dex-Net 2.0", RSS 2017 (key `mahler-2017-dexnet2`, verified). 두 연구 모두 자세 오차에 강건한 지표로 파지 정답을 매기는 계보이며, 정답 품질을 바꾸는 단계에서 비교 대상이 된다. 이 아이디어의 첫 단계(정답 탐색의 자기 일치율)에 해당하는 기존 연구는 찾아보지 않았다.
+- **Novelty gap (hypothesis, not assertion):** 참신성을 주장하는 아이디어가 아니라 우리 파이프라인의 병목을 가르는 작업이다. 참신성 판단은 연구자 몫으로 남긴다.
+- **Proposed mechanisms:** 정답 탐색이 범위 안 표면점(보통 100개 이상) 중 32개만 뽑아 그 조합의 1등을 정답으로 적는다. 뽑기가 바뀌면 정답 점이 바뀌므로, 같은 입력에 대해 정답이 하나로 정해지지 않는다. 네트워크는 이 부분을 맞힐 수 없다.
+- **Strongest objections:** (가) 합격과 불합격의 차이가 네트워크 입력에 보이지 않을 수 있다(7월의 합격 예측 출력이 기저율 수준). (나) 정답이 일관되더라도 α가 거의 같은 다른 자리가 여럿이면 여전히 하나로 정해지지 않는다(팔 3대 레코드의 17%에 최선의 0.95배 이상인 다른 자리 배치가 있음). (다) 마지막 고르기가 α 기준이라, 네트워크가 정답 근처 점을 내도 최종 조합은 다른 자리로 갈 수 있다(상위 8점에 정답 근처 점이 세 팔 모두 있던 291개 중 74개만 최종 조합이 그 근처).
+- **Falsifiable predictions:** 씨앗만 바꾼 정답 탐색에서 세 팔 모두 한 칸 이내로 일치하는 비율이 50% 미만이다. 80% 이상이면 "정답이 뽑기 운으로 정해진다"는 설명은 기각된다.
+- **Minimal discriminating experiment:** EXP-001 (씨앗만 바꾼 정답 탐색의 자기 일치율, 선형계획만 사용, 약 10분).
+- **Own experiments (in experiments/):** EXP-001-gt-seed-consistency
+- **Experiments referenced from other ideas (by EXP number):** 없음
+- **Unresolved decisions for researcher:** EXP-001 결과에 따라 정답 생성을 고칠지 네트워크를 고칠지. 보류 중인 "합격한 정답만으로 net2 재학습"을 할지. 정답 점수를 "자리를 흔들어도 남는 α"로 바꾸는 근본 처방을 추진할지.

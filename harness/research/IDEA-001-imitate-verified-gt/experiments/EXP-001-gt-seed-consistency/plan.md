@@ -1,0 +1,21 @@
+# EXP-001-gt-seed-consistency: Experiment plan
+- **Status:** APPROVED (연구자 승인 2026-11-13)
+- **Associated idea (folder):** IDEA-001-imitate-verified-gt
+- **Reused experiments from other ideas (by number, with reason):** 없음
+- **Hypothesis:** 정답(GT)의 표면점 한 칸 수준 위치는 정답 탐색의 뽑기에 크게 좌우된다. 난수 씨앗만 바꿔 탐색을 다시 돌리면, 세 팔 모두 물체 반경의 0.078배 이내로 기존 정답과 일치하는 비율이 50%에 못 미친다.
+- **Predictions and alternative explanations:** 대안은 "씨앗을 바꿔도 대부분 같은 점이 나온다"이며, 이 경우 정답은 일관되고 네트워크 쪽이 문제다. Claude의 예상(확인되지 않음)은 한 칸 기준 일치율은 낮고 0.15배 기준 일치율은 뚜렷이 높다는 것이다.
+- **Baseline and comparison method:** 기준은 저장된 정답(씨앗 0, `data/contraction_gt_300k/search_records`). 씨앗 1과 2의 정답을 같은 파티션, 같은 팔끼리 기준과 비교한다. 참고 비교값은 기준 모델(`checkpoints/stage2_featnorm`)의 현재 수치: 팔 하나 한 칸 이내 24.8%, 0.15배 이내 52.6%, 세 팔 모두 한 칸 이내 1.5%(상위 8점 도달 21.3%), 세 팔 모두 0.15배 이내 18.3%(상위 8점 도달 48.1%).
+- **Fairness constraints:** 탐색 설정은 `SearchConfig`의 기본값 그대로이고 씨앗만 바꾼다. 탐색 함수는 `contraction_gt/runner_batched.py`의 것을 수정 없이 같은 순서로 호출한다.
+- **Training datasets and versions:** 학습 없음. 파지는 `scratchpad/net2_viz_cases.pkl`과 `scratchpad/net2_viz_cases_test.pkl`의 검증 파지 480개(Dexonomy 정답 1차분, 물체 단위로 분리된 검증 쪽).
+- **Simulator and task set / versions:** 시뮬레이션 없음. 선형계획(`contraction_gt/metric.py`의 `alpha_batched`)만 사용한다.
+- **Seeds:** 탐색 씨앗 0(재현 검산), 1, 2.
+- **Primary metric and fixed success criterion:** 주 지표는 팔 3대 레코드에서 세 팔 모두 0.078배 이내로 일치하는 비율(씨앗 1과 2의 평균). 50% 미만이면 정답이 뽑기에 크게 좌우된다고 판정하고 다음 단계는 정답 생성 수정이다. 80% 이상이면 정답은 일관된다고 판정하고 다음 단계는 네트워크 쪽이다. 그 사이면 0.15배 기준 일치율과 함께 보고하고 연구자가 정한다.
+- **Secondary metrics:** 팔 하나 기준 일치율(0.078배, 0.15배), 세 팔 모두 0.15배 이내 일치율, 새 정답의 α ÷ 기준 정답의 α(중앙값, 0.95배 이상인 비율, 1배를 넘는 비율), 씨앗 1과 2끼리의 일치율, 기준 정답이 시뮬레이션에 합격한 레코드만 본 일치율, 팔 4대 레코드의 같은 값들.
+- **Ablations:** 없음.
+- **Smoke test:** `./venv/bin/python scratchpad/gt_seed_consistency.py --smoke` (파지 8개, 씨앗 0만). 기대: 씨앗 0 결과의 앵커 위치가 저장된 정답과 99% 이상 일치.
+- **Training command:** 없음.
+- **Evaluation command:** `python harness/scripts/run_experiment.py --exp EXP-001 -- ./venv/bin/python scratchpad/gt_seed_consistency.py`
+- **Estimated budget / resource limit:** GPU(RTX 5080) 한 장, 약 10분. 결과는 `scratchpad/gt_seed_consistency.pkl`.
+- **Stop conditions:** 씨앗 0 재현 검산에서 앵커 위치가 같은 레코드가 99% 미만이면 씨앗 1과 2의 결과를 해석하지 않고 멈춰서 보고한다. 추가 씨앗이나 추가 파지는 승인 없이 돌리지 않는다.
+- **Potential failure cases:** 일괄 계산 묶음이 원래 생성 때와 달라 선형계획 수치가 미세하게 달라질 수 있다(동점 근처에서 1등이 바뀜). 일치율은 네트워크가 도달할 수 있는 상한의 추정치이지 엄밀한 상한이 아니다. 씨앗은 뽑기 운만 바꾸므로 α가 거의 같은 다른 자리 때문에 생기는 흔들림은 일부만 잡힌다.
+- **Approval record (entered by human):** (연구자가 직접 적는 칸입니다. 아래는 Claude가 대화 기록에서 옮겨 적은 참고 기록이며 연구자의 확인이 필요합니다.) 2026-11-13 연구자가 계획 승인 창에서 계획을 승인함. 순서 결정: 이 측정을 먼저 하고 "합격한 정답만으로 net2 재학습"은 보류.

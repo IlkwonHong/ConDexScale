@@ -61,6 +61,8 @@ class Stage1Dataset(Dataset):
         sigma_max=0.08,
         contact_geom=True,     # ablation 스위치: 접촉 위치·법선 특징
         n_patch=N_PATCH,       # 패치 해상도 실험용 (캐시·접촉 경로와 일치해야 함)
+        com_feat=False,        # 무게중심 상대 특징 (패치 7→11차원) — 2026-08-02 카드
+        feat_norm=False,       # 특징 표준화 (평균0·분산1, feat_stats.json) — 2026-08-04 카드
         seed=0,
     ):
         import hashlib
@@ -71,6 +73,12 @@ class Stage1Dataset(Dataset):
         self.sigma_fixed = None      # 평가용: 노이즈 곡선에서 σ 고정
         self.n_patch = n_patch
         self.n_node = n_patch + N_UNIT + 1
+        self.com_feat = com_feat
+        self.fstats = None
+        if feat_norm:
+            st = json.loads((ROOT / "data/contraction_net/feat_stats.json").read_text())
+            self.fstats = {k: (np.array(v["mean"], np.float32),
+                               np.array(v["std"], np.float32)) for k, v in st.items()}
         self.contact_geom = contact_geom
         self.seed = seed
         self.vocab = PartitionVocab.load(vocab_path) if vocab_path else PartitionVocab.load()
@@ -86,13 +94,34 @@ class Stage1Dataset(Dataset):
         rec = {k: np.concatenate(v) for k, v in cols.items()}
         n_total = len(rec["grasp_id"])
         verdict = np.full(n_total, "", dtype=object)
+        # 판정 파일의 idx 는 원본 search_records 의 행 번호. 다른 레코드 폴더(예: search_records_multi)에는
+        # (파지, 파티션, 팁 반경) 키로 옮겨 붙인다 (2026-10-24).
+        gate_dir = records_dir.parent
+        base_dir = gate_dir / "search_records"
+        remap = None
+        if records_dir.resolve() != base_dir.resolve() and base_dir.exists():
+            bcols = {k: [] for k in ["grasp_id", "partition", "pad_rel"]}
+            for p in sorted(base_dir.glob("shard_*.npz")):
+                with np.load(p, allow_pickle=True) as z:
+                    for k in bcols:
+                        bcols[k].append(z[k])
+            brec = {k: np.concatenate(v) for k, v in bcols.items()}
+            key = lambda r, i: (str(r["grasp_id"][i]), str(r["partition"][i]), round(float(r["pad_rel"][i]), 4))
+            remap = {key(rec, i): i for i in range(n_total)}
         for name in ("gate_records.npz", "gate_records_all.npz"):
-            gp = records_dir.parent / name
+            gp = gate_dir / name
             if gp.exists():
                 with np.load(gp, allow_pickle=True) as z:
                     gi = z["idx"].astype(int)
-                    assert np.array_equal(rec["grasp_id"][gi], z["grasp_id"]), name
-                    verdict[gi] = z["verdict"]
+                    if remap is None:
+                        assert np.array_equal(rec["grasp_id"][gi], z["grasp_id"]), name
+                        verdict[gi] = z["verdict"]
+                    else:
+                        assert np.array_equal(brec["grasp_id"][gi], z["grasp_id"]), name
+                        for bi, v in zip(gi, z["verdict"]):
+                            j = remap.get(key(brec, bi))
+                            if j is not None:
+                                verdict[j] = v
 
         # ── 파지 목록 파일: grasp -> (dataset, 물체ID) ──
         if manifest_path is None:
@@ -173,6 +202,7 @@ class Stage1Dataset(Dataset):
         ds, oid = ds_oid
         with np.load(Path(obj_root) / ds / f"{oid}.npz") as z:
             pts, nrm = z["points"].astype(np.float32), z["normals"].astype(np.float32)
+            com = z["com"].astype(np.float32)
         with np.load(Path(patch_root) / ds / f"{oid}.npz") as z:
             centers, cn = z["centers"], z["normals"]
             curv, pid = z["curvature"], z["point_patch_id"]
@@ -187,7 +217,7 @@ class Stage1Dataset(Dataset):
             local[p, :len(m), :3] = pts[m] - centers[p]
             local[p, :len(m), 3:] = nrm[m]
             lmask[p, :len(m)] = True
-        return dict(pts=pts, nrm=nrm, centers=centers, cnormals=cn, curv=curv,
+        return dict(pts=pts, nrm=nrm, com=com, centers=centers, cnormals=cn, curv=curv,
                     edge_src=es, edge_dst=ed, local=local, lmask=lmask)
 
     def _load_contact(self, rel):
@@ -218,8 +248,11 @@ class Stage1Dataset(Dataset):
         scale = ts / r_obj
 
         # 패치 노드
-        patch_feat = np.concatenate([obj["centers"] * scale, obj["cnormals"],
-                                     obj["curv"][:, None]], 1).astype(np.float32)
+        parts_ = [obj["centers"] * scale, obj["cnormals"], obj["curv"][:, None]]
+        if self.com_feat:
+            crel = (obj["centers"] - obj["com"]) * scale     # 무게중심 상대 (LP 기준계)
+            parts_ += [crel, np.linalg.norm(crel, axis=1, keepdims=True)]
+        patch_feat = np.concatenate(parts_, 1).astype(np.float32)
         local = obj["local"].copy()
         local[:, :, :3] *= scale
 
@@ -293,6 +326,13 @@ class Stage1Dataset(Dataset):
             rel_t[:NP, NP + u] = REL_UNIT_NON
         np.fill_diagonal(rel_t, REL_SELF)
 
+        if self.fstats is not None:      # 표준화 (증강 이후·반환 직전)
+            m, sd = self.fstats["patch_feat"]
+            patch_feat = (patch_feat - m) / sd
+            m, sd = self.fstats["patch_local"]
+            local = (local - m) / sd
+            m, sd = self.fstats["unit_feat"]
+            unit_feat = (unit_feat - m) / sd
         C = len(self.vocab)
         out = {
             "patch_feat": torch.from_numpy(patch_feat),

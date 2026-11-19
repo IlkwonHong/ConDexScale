@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+
+# Run folders: keep only provenance (run.json) and the log; ignore checkpoints, videos, etc.
+research/*/experiments/*/runs/*/*
+!research/*/experiments/*/runs/*/run.json
+!research/*/experiments/*/runs/*/output.log
+
+# Paper PDFs are large; the index and surveys are tracked
+research/references/papers/

@@ -1,0 +1,13 @@
+# EXP-NNN-short-slug: Analysis
+- **Plan and immutable evaluation criteria:**
+- **Runs analyzed (runs/run-NNN):**
+- **Observed metrics (raw paths):**
+- **Large outputs location (checkpoints, videos; not in git):**
+- **Baseline comparison and matched conditions:**
+- **Seeds, N and uncertainty / variance:**
+- **Successes and failures:**
+- **Confounders / protocol deviations:**
+- **Supported claims:**
+- **Unsupported claims / uncertainty:**
+- **Next discriminating tests with costs:**
+- **Human decision (pending until reviewed; record in memory/decision_log.md):**

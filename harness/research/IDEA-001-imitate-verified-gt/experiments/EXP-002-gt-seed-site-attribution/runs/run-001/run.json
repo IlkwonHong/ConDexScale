@@ -1,0 +1,18 @@
+{
+  "experiment_id": "EXP-002-gt-seed-site-attribution",
+  "idea_id": "IDEA-001-imitate-verified-gt",
+  "run_id": "run-001",
+  "run_uid": "db3617",
+  "command": [
+    "./venv/bin/python",
+    "scratchpad/gt_seed_site_attribution.py"
+  ],
+  "project_directory": "/home/robin/a_workspace/condex",
+  "utc_started": "2026-11-13T12:43:14.366375+00:00",
+  "git_commit": "93254b206bce686d18f11a6237709c064711f06d",
+  "git_dirty": true,
+  "python_version": "3.11.18",
+  "hostname": "robin-X870-AORUS-ELITE-WIFI7",
+  "exit_code": 0,
+  "utc_finished": "2026-11-13T12:55:12.637492+00:00"
+}

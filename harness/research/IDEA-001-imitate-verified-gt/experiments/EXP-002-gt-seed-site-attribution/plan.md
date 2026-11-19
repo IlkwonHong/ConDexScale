@@ -1,0 +1,21 @@
+# EXP-002-gt-seed-site-attribution: Experiment plan
+- **Status:** APPROVED (2026-11-13, 아래 승인 기록 참고)
+- **Associated idea (folder):** IDEA-001-imitate-verified-gt
+- **Reused experiments from other ideas (by number, with reason):** 다른 아이디어의 실험은 없다. 같은 아이디어의 EXP-001-gt-seed-consistency에서 비교값(세 자리의 씨앗을 모두 바꿨을 때의 일치율)과 검산용 결과(`scratchpad/gt_seed_consistency.pkl`의 씨앗 1 결과)를 가져다 쓴다.
+- **Hypothesis:** (Claude의 추정) 정답(GT) 탐색에서 난수 씨앗이 들어가는 세 자리 중 "팔마다 범위 안 표면점을 32개로 줄이는 자리"가 정답을 다른 자리로 옮기는 주된 원인이다.
+- **Predictions and alternative explanations:** 예측은 그 자리만 씨앗을 바꿨을 때의 불일치율이 세 자리를 모두 바꿨을 때 불일치율의 절반 이상이고, 나머지 두 자리는 각각 절반에 못 미친다는 것이다. 대안 1은 "무작위 조합 64개"가 주된 원인이라는 것이다(값싼 점수 상위 128개 조합이 α 1등을 자주 놓친다는 뜻이 된다). 대안 2는 어느 한 자리도 절반에 못 미치고 여러 자리가 합쳐져야 정답이 옮겨 간다는 것이다.
+- **Baseline and comparison method:** 기준은 저장된 정답(세 자리 모두 씨앗 0, `data/contraction_gt_300k/search_records`)이다. 조건마다 한 자리만 씨앗을 1 또는 2로 바꾸고 나머지 두 자리는 0으로 둔 뒤, 같은 파티션의 같은 팔끼리 기준과 비교한다. 비교값은 EXP-001에서 세 자리를 모두 바꾼 결과이다(세 팔 모두 0.078배 이내 일치율 28.5%와 29.6%, 불일치율로는 71.5%와 70.4%).
+- **Fairness constraints:** 탐색 코드는 수정하지 않는다. 스크립트가 실행 중에 `contraction_gt/runner_batched.py`가 부르는 두 함수(`candidates_in_region`, `_top_combos`)에 넘어가는 씨앗 인자만 자리별로 바꾼다. 탐색 설정은 `SearchConfig` 기본값이고 파지는 EXP-001과 같은 480개이다.
+- **Training datasets and versions:** 학습 없음. EXP-001과 같은 검증 파지 480개(`scratchpad/net2_viz_cases.pkl`, `scratchpad/net2_viz_cases_test.pkl`).
+- **Simulator and task set / versions:** 시뮬레이션 없음. 선형계획(`contraction_gt/metric.py`의 `alpha_batched`)만 사용한다.
+- **Seeds:** 자리별 씨앗 값 1과 2(기준은 0). 씨앗이 들어가는 세 자리는 (가) 팔마다 범위 안 표면점을 32개로 줄일 때의 첫 점, (나) 값싼 점수 상위 128개 조합에 더하는 무작위 조합 64개, (다) 다듬기 후보가 10개를 넘을 때 10개로 줄이는 첫 점이다.
+- **Primary metric and fixed success criterion:** 주 지표는 팔 3대 레코드에서 "세 팔 모두 0.078배 이내로 일치"하지 않는 비율(불일치율)을 자리마다 씨앗 1과 2에 대해 평균한 값이다. 읽는 기준은 실행 전에 고정한다. 한 자리의 불일치율이 EXP-001 전체 불일치율 평균(71.0%)의 절반(35.5%) 이상이면 "주된 원인", 10분의 1(7.1%) 미만이면 "거의 영향 없음", 그 사이면 "부분 원인"으로 읽는다.
+- **Secondary metrics:** 완전히 같은 점인 비율, 0.15배 이내 일치율, 팔 하나 기준 일치율, 새 정답의 α ÷ 기준 정답의 α(중앙값, 0.95배 이상인 비율, 1배를 넘는 비율), 기준 정답이 시뮬레이션에 합격한 레코드만 본 값.
+- **Ablations:** 없음(이 실험 자체가 자리별 분해이다).
+- **Smoke test:** `./venv/bin/python scratchpad/gt_seed_site_attribution.py --smoke` (파지 8개, 검산 두 가지만). 기대: 검산 1과 검산 2가 모두 99% 이상.
+- **Training command:** 없음.
+- **Evaluation command:** `python harness/scripts/run_experiment.py --exp EXP-002 -- ./venv/bin/python scratchpad/gt_seed_site_attribution.py`
+- **Estimated budget / resource limit:** GPU(RTX 5080) 한 장. 탐색 8회(검산 2회, 자리 3개 × 씨앗 2개)이고 팔 3대만 돌리므로 10~20분으로 추정한다. 결과는 `scratchpad/gt_seed_site_attribution.pkl`.
+- **Stop conditions:** 검산 1(세 자리 모두 씨앗 0으로 돌린 결과가 저장된 정답과 99% 이상 같은 점)이나 검산 2(세 자리 모두 씨앗 1로 돌린 결과가 EXP-001의 씨앗 1 결과와 99% 이상 같은 점)가 통과하지 못하면 자리별 결과를 해석하지 않고 멈춰서 보고한다. 검산 2는 씨앗이 들어가는 자리가 이 세 곳뿐인지를 확인하는 용도이다.
+- **Potential failure cases:** 팔 4대는 보지 않는다(팔마다 후보가 12개라 결과가 다를 수 있다). 세 자리는 차례로 이어져 있어 효과가 단순히 더해지지 않으므로, 자리별 불일치율의 합이 전체 불일치율과 같지 않을 수 있다. 씨앗 값은 2개뿐이다. 0.078배는 표면점 한 점 간격이 아니라 표면점 약 10개가 들어가는 범위이다(EXP-001 `analysis.md`의 정정 1).
+- **Approval record (entered by human):** (연구자가 직접 적는 칸입니다. 아래는 Claude가 대화 기록에서 옮겨 적은 참고 기록이며 연구자의 확인이 필요합니다.) 2026-11-13 Claude가 "씨앗이 들어가는 세 자리 중 한 자리씩만 바꿔 다시 돌리는 실험(선형계획만, 10~20분 추정)"을 제안했고 연구자가 대화에서 "일단 해봐바"로 실행을 승인함.

@@ -179,9 +179,42 @@ def measure_capacity(object_spec, anchor_pos, anchor_normal, wrench_dir, r_obj,
                        "final_dev": _pose_deviation(data, ref)}
 
 
+def _record_contacts(model, data, n_tips, obj_body):
+    """정착 직후 팁↔물체의 실제 접촉을 물체 프레임으로 기록 (렌치 공간 닮음 실험의 C).
+
+    MuJoCo 2.3.7 함정(memory 기록): d.contact[i].pos/frame 은 0 벡터 → 구조체 배열
+    d.contact.pos[i] 로 읽는다. 법선 부호는 geom 순서가 아니라 기하로 정한다:
+    팁 중심 → 접촉점 방향 = 팁이 물체를 미는 방향(파이프라인의 안쪽 법선 규약).
+    """
+    q = data.qpos[:7].copy()
+    R = np.zeros(9)
+    mujoco.mju_quat2Mat(R, q[3:7])
+    R = R.reshape(3, 3)
+    tip_geom = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, f"tip_g{i}") for i in range(n_tips)]
+    f6 = np.zeros(6)
+    rows = []
+    for c in range(data.ncon):
+        g1, g2 = int(data.contact.geom1[c]), int(data.contact.geom2[c])
+        b1, b2 = int(model.geom_bodyid[g1]), int(model.geom_bodyid[g2])
+        if b1 == obj_body and g2 in tip_geom:
+            tg = g2
+        elif b2 == obj_body and g1 in tip_geom:
+            tg = g1
+        else:
+            continue
+        p_w = np.array(data.contact.pos[c], dtype=np.float64)
+        n_w = p_w - data.geom_xpos[tg]
+        n_w = n_w / max(float(np.linalg.norm(n_w)), 1e-12)
+        mujoco.mj_contactForce(model, data, c, f6)
+        rows.append(dict(tip=tip_geom.index(tg), pos_obj=R.T @ (p_w - q[:3]), normal_obj=R.T @ n_w,
+                         pos_world=p_w, dist=float(data.contact.dist[c]), f_normal=float(abs(f6[0]))))
+    return dict(contacts=rows, obj_qpos=q,
+                tip_center_world=np.stack([data.geom_xpos[g].copy() for g in tip_geom]))
+
+
 def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
                            r_obj, cfg: SimConfig = None, preload_forces=None,
-                           force_fn=None, seed=0):
+                           force_fn=None, seed=0, contact_log=None):
     """여러 외란 방향을 한 모델로 측정 (모델 빌드·메쉬 로드를 방향 간 재사용).
 
     dirs: [D, 6] (metric 규약), levels: [D, L] 방향별 테스트 α 그리드 (오름차순).
@@ -189,7 +222,9 @@ def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
     대칭 배치용). 비대칭 다중 앵커는 균등 포화가 물체를 밀어버리므로(파일럿
     진단) LP 평형 배분을 넘겨야 한다. 목표 힘은 접촉 강성을 몰라도 되도록
     정착 중 피드백(측정 힘과의 차이로 서보 목표를 보정)으로 맞춘다.
-    반환: (alpha_sim [D], settled bool, 예압 달성도).
+    contact_log: dict 를 주면 정착 직후(외란 전) 팁↔물체 실제 접촉(_record_contacts)과
+    팁 힘을 채워 넣는다 (dirs 가 비어 있으면 정착·기록만 하고 끝난다).
+    반환: (alpha_sim [D], settled bool, 예압 달성도, 불안정 방향 수).
     """
     cfg = cfg or SimConfig()
     xml = build_scene_xml(object_spec, anchor_pos, anchor_normal, cfg)
@@ -318,6 +353,10 @@ def measure_capacity_multi(object_spec, anchor_pos, anchor_normal, dirs, levels,
     F_cal = data.actuator_force[:n_tips].copy()
     press_cal = press_ctrl.copy()
     preload_frac_meas = float(np.mean(achieved))
+    if contact_log is not None:
+        contact_log.update(_record_contacts(model, data, n_tips, obj_body))
+        contact_log["actuator_force"] = F_cal.copy()
+        contact_log["drift"] = float(np.linalg.norm(data.qpos[:3]))
     if float(np.linalg.norm(data.qpos[:3])) > cfg.trans_tol_rel * r_obj or data.ncon == 0:
         return out, False, preload_frac_meas, 0
 
