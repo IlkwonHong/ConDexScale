@@ -19,9 +19,9 @@ def load(d, pattern="shard_*.npz"):
     out = {}
     for f in sorted(d.glob(pattern)):
         z = np.load(f, allow_pickle=False)
-        for i in range(len(z["grasp_id"])):
-            k = (str(z["grasp_id"][i]), str(z["partition"][i]), round(float(z["pad_rel"][i]), 4))
-            out[k] = (z["anchor_idx"][i], z["alpha"][i])
+        g, pa, pr, ai, al = (z[k] for k in ("grasp_id", "partition", "pad_rel", "anchor_idx", "alpha"))
+        for i in range(len(g)):
+            out[(str(g[i]), str(pa[i]), round(float(pr[i]), 4))] = (ai[i], al[i])
     return out
 
 
