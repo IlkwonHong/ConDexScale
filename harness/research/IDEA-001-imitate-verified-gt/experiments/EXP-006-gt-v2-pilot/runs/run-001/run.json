@@ -1,0 +1,33 @@
+{
+  "experiment_id": "EXP-006-gt-v2-pilot",
+  "idea_id": "IDEA-001-imitate-verified-gt",
+  "run_id": "run-001",
+  "run_uid": "7b86fa",
+  "command": [
+    "./venv/bin/python",
+    "-m",
+    "contraction_gt.runner_multi",
+    "0",
+    "1",
+    "0",
+    "data/contraction_gt_300k",
+    "48",
+    "0",
+    "--score",
+    "alpha",
+    "--seed",
+    "0",
+    "--gid-list",
+    "scratchpad/exp006/pilot_gids_1000.txt",
+    "--out-subdir",
+    "search_records_exp006_alpha_s0"
+  ],
+  "project_directory": "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot",
+  "utc_started": "2026-11-20T01:04:13.430009+00:00",
+  "git_commit": "fac2f8f89832591c9098a92234b4b6e7abdb7dd0",
+  "git_dirty": true,
+  "python_version": "3.12.3",
+  "hostname": "robin-X870-AORUS-ELITE-WIFI7",
+  "exit_code": 0,
+  "utc_finished": "2026-11-20T01:15:40.346393+00:00"
+}

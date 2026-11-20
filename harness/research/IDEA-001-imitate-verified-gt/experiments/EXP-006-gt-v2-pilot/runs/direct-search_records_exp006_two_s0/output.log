@@ -1,0 +1,6 @@
+[shard 0] 48/1000 (레코드 709, 실패 0) 2.574s/grasp times={'prep': 2.6, 'coarse': 15.4, 'refine': 63.2, 'cond': 41.6, 'mu_sweep': 0.7}
+[shard 0] 288/1000 (레코드 3642, 실패 0) 2.196s/grasp times={'prep': 13.4, 'coarse': 75.6, 'refine': 329.5, 'cond': 210.3, 'mu_sweep': 3.5}
+[shard 0] 528/1000 (레코드 6429, 실패 0) 2.106s/grasp times={'prep': 23.3, 'coarse': 132.1, 'refine': 581.5, 'cond': 368.7, 'mu_sweep': 6.2}
+[shard 0] 768/1000 (레코드 9441, 실패 0) 2.128s/grasp times={'prep': 34.2, 'coarse': 194.2, 'refine': 854.0, 'cond': 542.1, 'mu_sweep': 9.1}
+[shard 0] 1000/1000 (레코드 12062, 실패 0) 2.104s/grasp times={'prep': 43.5, 'coarse': 246.9, 'refine': 1110.5, 'cond': 691.0, 'mu_sweep': 11.6}
+[shard 0] 완료: grasp 1000, part 1개, 실패 0, times={'prep': 43.49548411369324, 'coarse': 246.92861533164978, 'refine': 1110.459861278534, 'cond': 691.0428009033203, 'mu_sweep': 11.645927429199219}
