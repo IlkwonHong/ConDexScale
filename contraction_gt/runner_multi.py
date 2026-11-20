@@ -102,11 +102,16 @@ def _cond_table(job, ma_coarse, D=14):
 
 
 def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0,
-              score="alpha", seed=0, out_subdir="search_records_multi", gid_list=None):
+              score="alpha", seed=0, out_subdir="search_records_multi", gid_list=None,
+              k_cand=None, k_cand_n4=None, refine_iters=1, skip_cond=False):
     """score: "alpha"(기존) | "rho64"(전 단계 ρ0) | "two_stage"(거친 단계 α 로 거르고 다듬기·확정은 ρ0).
     seed: 후보 줄이기·무작위 조합 씨앗 (EXP-002 의 주된 자리). gid_list: 처리할 grasp_id 집합(없으면 전체)."""
     cfg = SearchConfig()
     cfg.seed = int(seed)
+    if k_cand:
+        cfg.k_candidates = int(k_cand)          # 팔마다 범위 안 후보 점 수 (기본 32)
+    if k_cand_n4:
+        cfg.k_candidates_n4 = int(k_cand_n4)    # 팔 4대 (기본 12)
     s_coarse = "rho64" if score == "rho64" else "alpha"
     s_fine = "alpha" if score == "alpha" else "rho64"
     D = SCORE_DIMS[s_fine]
@@ -155,7 +160,9 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0,
             times=json.dumps(times), n_grasp=n_grasp, n_fail=n_fail,
             config=json.dumps(dict(MAX_MODES=MAX_MODES, DIV_REL=DIV_REL, PREFILTER=PREFILTER,
                                    KEEP_FRAC=KEEP_FRAC, FLOOR=FLOOR, N_FIRST=N_FIRST,
-                                   TOP_COND=TOP_COND, score=score, seed=int(seed))),
+                                   TOP_COND=TOP_COND, score=score, seed=int(seed),
+                                   k_cand=cfg.k_candidates, k_cand_n4=cfg.k_candidates_n4,
+                                   refine_iters=int(refine_iters), skip_cond=bool(skip_cond))),
         )
         part_idx += 1
         recs_out = {k: [] for k in recs_out}
@@ -220,14 +227,38 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0,
         for g, m in sub:
             m["ref"] = _refine_set(g["samples"], m, m["c_combo"], cfg)
         _score_by_n(sub, cfg, "ref", s_fine)
+        # 다듬기 반복 (refine_iters > 1): 새 최선이 나온 배치만 그 자리 주변을 다시 다듬는다.
+        # 채점한 조합은 누적해 두고 확정 단계가 그중 최선을 고른다.
+        if refine_iters > 1:
+            for g, m in sub:
+                m["_best"] = float(max(m["c_min"], m["ref_alpha"].min(axis=1).max()))
+                m["_center"] = m["ref"][int(m["ref_alpha"].min(axis=1).argmax())]
+                m["_active"] = m["ref_alpha"].min(axis=1).max() > m["c_min"] + 1e-9
+            for _it in range(refine_iters - 1):
+                act = [(g, m) for g, m in sub if m["_active"]]
+                if not act:
+                    break
+                for g, m in act:
+                    m["ref2"] = _refine_set(g["samples"], m, m["_center"], cfg)
+                _score_by_n(act, cfg, "ref2", s_fine)
+                for g, m in act:
+                    mn = m["ref2_alpha"].min(axis=1)
+                    m["ref"] = np.concatenate([m["ref"], m["ref2"]])
+                    m["ref_alpha"] = np.concatenate([m["ref_alpha"], m["ref2_alpha"]])
+                    if mn.max() > m["_best"] + 1e-9:
+                        m["_best"], m["_center"] = float(mn.max()), m["ref2"][int(mn.argmax())]
+                    else:
+                        m["_active"] = False
         times["refine"] += time.time() - t0
 
         # ---- 첫 자리 조건 표 ----
         t0 = time.time()
-        withc = [(g, j) for g, j in named if len(j["cond"])]
+        withc = [] if skip_cond else [(g, j) for g, j in named if len(j["cond"])]
         _score_by_n(withc, cfg, "cond", s_fine)
         for g, j in named:
-            if not len(j["cond"]):
+            if skip_cond or not len(j["cond"]):
+                j["cond"] = np.zeros((0, j["n"]), np.int64)
+                j["cond_owner"] = np.zeros(0, np.int64)
                 j["cond_alpha"] = np.zeros((0, D))
             # two_stage 는 거친 단계 점수가 α 라 ρ0 와 섞지 않는다
             j["cond_tab"] = _cond_table(j, j["ma_coarse"] if score != "two_stage" else None)
@@ -344,7 +375,12 @@ if __name__ == "__main__":
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--out-subdir", default="search_records_multi")
     ap.add_argument("--gid-list", default=None, help="grasp_id 한 줄에 하나인 파일")
+    ap.add_argument("--k-cand", type=int, default=None, help="팔마다 후보 점 수 (기본 32)")
+    ap.add_argument("--k-cand-n4", type=int, default=None, help="팔 4대 후보 점 수 (기본 12)")
+    ap.add_argument("--refine-iters", type=int, default=1, help="다듬기 반복 상한 (기본 1 = 기존)")
+    ap.add_argument("--skip-cond", action="store_true", help="첫 자리 조건 표 단계 생략")
     a = ap.parse_args()
     gl = set(Path(a.gid_list).read_text().split()) if a.gid_list else None
     run_shard(a.shard, a.n_shards, a.total or None, a.manifest_dir, a.chunk, a.first_row,
-              score=a.score, seed=a.seed, out_subdir=a.out_subdir, gid_list=gl)
+              score=a.score, seed=a.seed, out_subdir=a.out_subdir, gid_list=gl,
+              k_cand=a.k_cand, k_cand_n4=a.k_cand_n4, refine_iters=a.refine_iters, skip_cond=a.skip_cond)
