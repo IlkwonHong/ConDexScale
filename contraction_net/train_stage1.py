@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--train-frac", type=float, default=1.0,
                     help="학습 파지 중 물체 해시 기준 고정 부분집합 비율 (데이터 규모 시험, EXP-005). "
                          "부분집합은 중첩됨: 0.25 ⊂ 0.5 ⊂ 1.0, 시드와 무관")
+    ap.add_argument("--holdout-grasp", type=float, default=0.0,
+                    help="학습 파지 중 이 비율을 파지 해시로 떼어 '같은 물체·다른 파지' 확인용으로 평가 (학습에서 제외)")
     ap.add_argument("--target-mode", default="prop", choices=["prop", "set95", "top1"],
                     help="파티션 분류 손실의 목표 모양 (기본 prop = 기존)")
     ap.add_argument("--seed", type=int, default=None,
@@ -80,6 +82,15 @@ def main():
         kw["patch_contacts_dir"] = base / f"patch_contacts_{args.n_patch}"
     tr = Stage1Dataset(split="train", augment=True, **kw)
     va = Stage1Dataset(split="val", augment=False, **kw)
+    ho = None
+    if args.holdout_grasp > 0:
+        import hashlib as _h
+        _hg = lambda gid: int(_h.md5(f"ho:{gid}".encode()).hexdigest()[:8], 16) / 16**8
+        ho_idx = [i for i, (gid, _e) in enumerate(tr.samples) if _hg(gid) < args.holdout_grasp]
+        keep_idx = [i for i, (gid, _e) in enumerate(tr.samples) if _hg(gid) >= args.holdout_grasp]
+        ho = Subset(Stage1Dataset(split="train", augment=False, **kw), ho_idx)
+        print(f"--holdout-grasp {args.holdout_grasp}: 학습 {len(keep_idx):,} / 같은 물체 확인용 {len(ho_idx):,}", flush=True)
+        tr = Subset(tr, keep_idx)
     if args.train_frac < 1.0:
         import hashlib
         def _u(gid):    # 물체 단위 [0,1) — 검증 분리 해시와 다른 소금
@@ -138,6 +149,9 @@ def main():
             sched.step()
             run += loss.item()
         m = evaluate(model, dl_va, device)
+        if ho is not None:
+            mh = evaluate(model, DataLoader(ho, batch_size=args.batch, num_workers=2), device)
+            m.update({f"ho_{k}": v for k, v in mh.items() if k.startswith(("top1", "tol95"))})
         score = (m.get("top1_n3", 0) + m.get("top1_n4", 0)) / 2
         rec = {"epoch": ep, "train_loss": run / max(1, len(dl_tr)),
                "sec": round(time.time() - t0, 1), **{k: round(v, 4) for k, v in m.items()}}
