@@ -1,0 +1,18 @@
+{
+  "experiment_id": "EXP-003-coarse-candidate-precheck",
+  "idea_id": "IDEA-001-imitate-verified-gt",
+  "run_id": "run-001",
+  "run_uid": "63011a",
+  "command": [
+    "./venv/bin/python",
+    "scratchpad/gt_coarse_candidate_precheck.py"
+  ],
+  "project_directory": "/home/robin/a_workspace/condex",
+  "utc_started": "2026-11-13T14:36:20.418525+00:00",
+  "git_commit": "93254b206bce686d18f11a6237709c064711f06d",
+  "git_dirty": true,
+  "python_version": "3.11.18",
+  "hostname": "robin-X870-AORUS-ELITE-WIFI7",
+  "exit_code": 0,
+  "utc_finished": "2026-11-13T14:55:43.883454+00:00"
+}

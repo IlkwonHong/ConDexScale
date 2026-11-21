@@ -13,9 +13,9 @@ from .stage1_dataset import N_UNIT
 
 
 class Stage2Net(Stage1NetV2):
-    def __init__(self, vocab, d=256, d_score=128, n_patch=128, **kw):
-        super().__init__(vocab, d=d, d_score=d_score, n_patch=n_patch, **kw)
-        self.pt_mlp = nn.Sequential(nn.Linear(d + 6, 256), nn.GELU(),
+    def __init__(self, vocab, d=256, d_score=128, n_patch=128, d_pf=7, d_ptf=6, **kw):
+        super().__init__(vocab, d=d, d_score=d_score, n_patch=n_patch, d_pf=d_pf, **kw)
+        self.pt_mlp = nn.Sequential(nn.Linear(d + d_ptf, 256), nn.GELU(),
                                     nn.Linear(256, d_score))
         self.tok_proj = nn.Linear(d_score, d_score)
         self.sc_mlp = nn.Sequential(nn.GELU(), nn.Linear(d_score, d_score),
@@ -39,8 +39,14 @@ class Stage2Net(Stage1NetV2):
 
         # ── net2: 히트맵 (추첨된 파티션 조건) ──
         # 점 임베딩: 소속 패치 노드 출력 gather + 점 로컬 특징
-        xp = torch.gather(x[:, :self.n_patch], 1,
-                          batch["point_patch"][..., None].expand(-1, -1, x.shape[-1]))
+        if "point_patch3" in batch:      # 가까운 패치 3개 토큰을 거리 가중으로 섞음 (경계 계단 제거)
+            xs = x[:, :self.n_patch]
+            i3, w3 = batch["point_patch3"], batch["point_patch3_w"].to(x.dtype)
+            xp = sum(torch.gather(xs, 1, i3[..., j, None].expand(-1, -1, x.shape[-1]))
+                     * w3[..., j, None] for j in range(i3.shape[-1]))
+        else:
+            xp = torch.gather(x[:, :self.n_patch], 1,
+                              batch["point_patch"][..., None].expand(-1, -1, x.shape[-1]))
         e_p = self.pt_mlp(torch.cat([xp, batch["point_feat"]], -1))   # [B,P,ds]
         # 그룹 토큰: 추첨 파티션의 부위→그룹 one-hot 합
         ug = batch["hm_unit_group"]                                   # [B,6], -1 = 없음

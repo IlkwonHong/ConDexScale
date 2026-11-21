@@ -154,8 +154,14 @@ def _pressure_rows(N, dtype, device):
 # 참조 솔버 (scipy HiGHS) — 검증 기준
 # ---------------------------------------------------------------------------
 
-def alpha_reference(W, dirs):
-    """정확한 LP 해. W:[B,N,6,6], dirs:[B,D,6] -> alpha [B,D] (torch, CPU)."""
+def alpha_reference(W, dirs, w_req=None):
+    """정확한 LP 해. W:[B,N,6,6], dirs:[B,D,6] -> alpha [B,D] (torch, CPU).
+
+    w_req [B,6] (정규화 단위)를 주면 등식이 Σ W x = w_req − α·d 로 바뀐다
+    (명목 렌치 w_req 를 실현한 채 −d 방향으로 얼마나 더 갈 수 있는가).
+    w_req ∉ W_c 면 LP 자체가 비가능 → 해당 원소는 NaN. w_req=None 은 기존
+    동작(원점 기준, 항상 feasible)과 동일.
+    """
     import numpy as np
     from scipy.optimize import linprog
 
@@ -164,6 +170,7 @@ def alpha_reference(W, dirs):
     n = 6 * N + 1
     Wf = _flatten_W(W).cpu().double().numpy()
     dirs_np = dirs.cpu().double().numpy()
+    wreq_np = None if w_req is None else w_req.cpu().double().numpy()
     A_ub = _pressure_rows(N, torch.float64, "cpu").numpy()
     b_ub = np.ones(N)
     c = np.zeros(n)
@@ -172,13 +179,17 @@ def alpha_reference(W, dirs):
 
     out = np.zeros((B, D))
     for b in range(B):
+        b_eq = np.zeros(6) if wreq_np is None else wreq_np[b]
         for d in range(D):
             A_eq = np.concatenate([Wf[b], dirs_np[b, d][:, None]], axis=1)
             res = linprog(
-                c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=np.zeros(6),
+                c, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq,
                 bounds=bounds, method="highs",
             )
-            out[b, d] = -res.fun if res.status == 0 else 0.0
+            if res.status == 0:
+                out[b, d] = -res.fun
+            else:
+                out[b, d] = 0.0 if wreq_np is None else float("nan")
     return torch.from_numpy(out)
 
 
@@ -186,15 +197,19 @@ def alpha_reference(W, dirs):
 # 배치 솔버 (OSQP 형 ADMM, torch) — 실전용
 # ---------------------------------------------------------------------------
 
-def alpha_batched(W, dirs, iters=40, tau=0.99):
+def alpha_batched(W, dirs, iters=40, tau=0.99, w_req=None):
     """GPU 배치 내점법(Mehrotra predictor-corrector)으로 LP 를 정확히 푼다.
 
     W:[B,N,6,6], dirs:[B,D,6] -> alpha [B,D].
 
     표준형:  min c'v  s.t.  A v = b,  v ≥ 0
       v = [x (6N), α, s (N)]  (s 는 압력 슬랙),  c = [0,…,0,-1,0,…,0]
-      A = [ G  ŵ  0 ]   b = [0 (6)]
+      A = [ G  ŵ  0 ]   b = [w_req (6), 기본 0]
           [ Pr 0  I ]       [1 (N)]
+
+    w_req [B,6] (정규화 단위): 등식을 Σ W x = w_req − α·d 로 바꾸는 오프셋.
+    ⚠ w_req ∈ W_c (실현 가능)일 때만 사용할 것 — 비가능 LP 는 IPM 수렴
+    보장이 깨진다. 가능성 검사는 compute_rho 가 수행한다.
 
     설계 이력(테스트로 확인): 직접 LP-ADMM 은 α*=0 퇴화 방향에서 정체하고,
     이분탐색+잔차 QP 는 wrench 집합 경계를 스치는(grazing) 방향에서 res_tol
@@ -220,9 +235,11 @@ def alpha_batched(W, dirs, iters=40, tau=0.99):
     # 행 등화: 비틀림 토크 행(~μ_tor)과 힘 행(~1)의 스케일 격차 해소
     row_scale = A.norm(dim=-1).clamp(min=1e-12)                # [BD, m]
     A = A / row_scale.unsqueeze(-1)
-    b = torch.zeros(m, dtype=dtype, device=device)
-    b[6:] = 1.0
-    b = b.unsqueeze(0) / row_scale                             # [BD, m]
+    b = torch.zeros(BD, m, dtype=dtype, device=device)
+    b[:, 6:] = 1.0
+    if w_req is not None:
+        b[:, :6] = w_req.unsqueeze(1).expand(B, D, 6).reshape(BD, 6)
+    b = b / row_scale                                          # [BD, m]
     c = torch.zeros(nv, dtype=dtype, device=device)
     c[n6] = -1.0
 
@@ -316,3 +333,107 @@ def compute_alpha(pos, normal, com=None, r_obj=1.0, mu_t=0.6, mu_tor=0.02,
     else:
         raise ValueError(f"unknown backend: {backend}")
     return alpha, dirs
+
+
+# ---------------------------------------------------------------------------
+# ℓ∞ 렌치 강건성 여유 ρ (논문 III-B: 가중 ℓ∞ 렌치 집합의 정점 검사)
+# ---------------------------------------------------------------------------
+
+_VERTEX_CACHE = {}
+
+
+def vertex_direction_set(dtype, device, force_only=False):
+    """B∞,D 하이퍼렉탱글의 정점 부호 v ∈ {−1,+1}^6 → [64, 6].
+
+    force_only=True 는 힘 3축만 ±1, 토크 성분 0 → [8, 6] (3차원 힘 외란만
+    고려하는 논문의 2^3=8 축약형). D 스케일·부호 규약은 compute_rho 가 처리.
+    """
+    key = (dtype, str(device), force_only)
+    if key not in _VERTEX_CACHE:
+        k = 3 if force_only else 6
+        idx = torch.arange(2 ** k)
+        bits = ((idx.unsqueeze(1) >> torch.arange(k)) & 1) * 2 - 1
+        v = torch.zeros(2 ** k, 6, dtype=dtype, device=device)
+        v[:, :k] = bits.to(dtype=dtype, device=device)
+        _VERTEX_CACHE[key] = v
+    return _VERTEX_CACHE[key]
+
+
+def compute_rho(pos, normal, w_req, com=None, r_obj=1.0, f_cap=1.0,
+                mu_t=0.6, mu_tor=0.02, d_diag=None, force_only=False,
+                backend="batched", **solver_kwargs):
+    """논문 III-B 의 ℓ∞ 강건성 여유 ρ — 고정 접촉 배치의 평가판.
+
+        ρ* = max{ ρ ≥ 0 : w̃_req + ρ·D·v ∈ W_c, ∀ v ∈ {−1,+1}^6 }
+
+    W_c 가 볼록하고 w̃_req ∈ W_c 이면 정점별 여유는 ρ 에 단조 → 집합 포함이
+    "64(또는 8) 정점 각각의 방향별 LP 여유의 min"과 동치가 되어, 기존 배치
+    LP 솔버(dirs = −D·v, b_eq = w̃_req)를 그대로 재사용한다.
+
+    입력 (물리 단위):
+      pos, normal : [B, N, 3]. normal 은 물체 안쪽(미는 방향).
+      w_req       : [B, 6] — 접촉이 만들어야 할 명목 렌치 (N, N·m), com 기준.
+                    준정적 들기 = (0, 0, +m·g, 0, 0, 0) (world 정렬 좌표에서).
+      f_cap       : 앵커당 최대 법선력 (N). 내부 정규화의 힘 단위 —
+                    기존 α 와 동일하게 "압력 상한 1" 배율로 환산된다.
+      d_diag      : [6] — 정규화 좌표에서의 D 대각 (기본 1). 물리 환산:
+                    힘 축 ρ·d_i·f_cap [N], 토크 축 ρ·d_i·f_cap·r_obj [N·m].
+      force_only  : True 면 힘 정점 8개만 (논문 2^3 축약).
+
+    반환 dict (전부 [B] torch, t_vertex 만 [B, V]):
+      rho           : ρ*. w̃_req ∉ W_c 면 음수 = −(명목 방향 부족분) (연속 신호).
+      feasible      : w̃_req ∈ W_c 여부 (bool).
+      alpha_nominal : 명목 방향 ŵ_req 의 생성 용량 (‖w̃_req‖ 와 비교용).
+                      w_req ≈ 0 이면 inf.
+      wreq_norm     : ‖w̃_req‖ (정규화 단위).
+      t_vertex      : 정점별 여유 (논문 규약: w̃ + t·D·v 의 t). 비가능 행은 NaN.
+      weak_vertex   : argmin 정점 인덱스 (vertex_direction_set 기준).
+    """
+    B, N = pos.shape[:2]
+    dtype, device = pos.dtype, pos.device
+    if com is None:
+        com = torch.zeros(B, 3, dtype=dtype, device=device)
+    W = ray_wrench_matrix(pos, normal, com, r_obj, mu_t, mu_tor)
+
+    # 물리 → 정규화: 힘 /f_cap, 토크 /(f_cap·r_obj)
+    f_cap_t = torch.as_tensor(f_cap, dtype=dtype, device=device).reshape(-1)
+    r_obj_t = torch.as_tensor(r_obj, dtype=dtype, device=device).reshape(-1)
+    w = torch.as_tensor(w_req, dtype=dtype, device=device).reshape(B, 6).clone()
+    w[:, :3] = w[:, :3] / f_cap_t.unsqueeze(-1)
+    w[:, 3:] = w[:, 3:] / (f_cap_t * r_obj_t).unsqueeze(-1)
+    wnorm = w.norm(dim=-1)
+
+    def solve(Wb, dirs, wreq):
+        if backend == "batched":
+            return alpha_batched(Wb, dirs, w_req=wreq, **solver_kwargs)
+        if backend == "reference":
+            return alpha_reference(Wb, dirs, w_req=wreq).to(device)
+        raise ValueError(f"unknown backend: {backend}")
+
+    # 1단계: 명목 가능성 — 원점 기준 ŵ_req 방향 생성 용량과 ‖w̃‖ 비교.
+    # (W_c 는 원점을 포함한 볼록집합이라, 반직선과의 교집합이 선분 [0, α₁]
+    #  → w̃ ∈ W_c ⟺ ‖w̃‖ ≤ α₁.)
+    nz = wnorm > 1e-12
+    alpha_nom = torch.full((B,), float("inf"), dtype=dtype, device=device)
+    if bool(nz.any()):
+        d1 = -(w[nz] / wnorm[nz].unsqueeze(-1)).unsqueeze(1)   # [Bnz, 1, 6]
+        alpha_nom[nz] = solve(W[nz], d1, None)[:, 0]
+    feasible = alpha_nom >= wnorm * (1.0 - 1e-9)
+
+    # 2단계: 가능한 배치만 정점 LP (dirs = −D·v ⇒ Σ W x = w̃ + t·D·v)
+    verts = vertex_direction_set(dtype, device, force_only)     # [V, 6]
+    V = verts.shape[0]
+    dd = (torch.ones(6, dtype=dtype, device=device) if d_diag is None
+          else torch.as_tensor(d_diag, dtype=dtype, device=device).reshape(6))
+    t_vertex = torch.full((B, V), float("nan"), dtype=dtype, device=device)
+    rho = alpha_nom - wnorm                                     # 비가능 행 = 음수 부족분
+    if bool(feasible.any()):
+        fi = feasible.nonzero(as_tuple=True)[0]
+        dirs = -(verts * dd).unsqueeze(0).expand(len(fi), V, 6)
+        t_vertex[fi] = solve(W[fi], dirs, w[fi])
+        rho[fi] = t_vertex[fi].min(dim=-1).values
+    weak_vertex = torch.where(
+        feasible, t_vertex.nan_to_num(float("inf")).argmin(dim=-1),
+        torch.zeros(B, dtype=torch.long, device=device))
+    return dict(rho=rho, feasible=feasible, alpha_nominal=alpha_nom,
+                wreq_norm=wnorm, t_vertex=t_vertex, weak_vertex=weak_vertex)

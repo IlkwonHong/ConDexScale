@@ -1,0 +1,21 @@
+{
+  "experiment_id": "EXP-004-c128-learnability",
+  "idea_id": "IDEA-001-imitate-verified-gt",
+  "run_id": "run-002",
+  "run_uid": "6a6031",
+  "command": [
+    "./venv/bin/python",
+    "scratchpad/gen_c128_records.py",
+    "--resume",
+    "--spent-min",
+    "41"
+  ],
+  "project_directory": "/home/robin/a_workspace/condex",
+  "utc_started": "2026-11-13T16:16:22.395092+00:00",
+  "git_commit": "93254b206bce686d18f11a6237709c064711f06d",
+  "git_dirty": true,
+  "python_version": "3.11.18",
+  "hostname": "robin-X870-AORUS-ELITE-WIFI7",
+  "exit_code": 0,
+  "utc_finished": "2026-11-13T20:25:24.329815+00:00"
+}

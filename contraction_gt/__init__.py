@@ -6,4 +6,6 @@ from .metric import (
     alpha_reference,
     alpha_batched,
     compute_alpha,
+    vertex_direction_set,
+    compute_rho,
 )

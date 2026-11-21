@@ -1,0 +1,20 @@
+# EXP-XXX: Experiment plan
+- **Status:** PROPOSED (requires researcher approval)
+- **Associated idea:**
+- **Hypothesis:**
+- **Predictions and alternative explanations:**
+- **Baseline and comparison method:**
+- **Fairness constraints:** fixed compute/data budget, same policy architecture, training steps and eval protocol unless explicitly varied
+- **Training datasets and versions:**
+- **Simulator and task set / versions:**
+- **Seeds:**
+- **Primary metric and fixed success criterion:**
+- **Secondary metrics:**
+- **Ablations:**
+- **Smoke test:** command, expected checks
+- **Training command:**
+- **Evaluation command:**
+- **Estimated budget / resource limit:**
+- **Stop conditions:**
+- **Potential failure cases:**
+- **Approval record (entered by human):**

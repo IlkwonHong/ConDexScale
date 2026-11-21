@@ -47,12 +47,13 @@ class _Block(nn.Module):
 
 class Stage1Net(nn.Module):
     def __init__(self, n_classes, d=256, layers=4, heads=8, d_local=64,
-                 d_id=32, dropout=0.1, n_patch=N_PATCH):
+                 d_id=32, dropout=0.1, n_patch=N_PATCH, d_pf=7):
         super().__init__()
         self.n_patch = n_patch
+        self.d_pf = d_pf
         self.pointnet = nn.Sequential(nn.Linear(6, d_local), nn.GELU(),
                                       nn.Linear(d_local, d_local))
-        self.patch_enc = nn.Linear(7 + d_local, d)
+        self.patch_enc = nn.Linear(d_pf + d_local, d)
         self.unit_id = nn.Embedding(N_UNIT, d_id)
         self.unit_enc = nn.Linear(10 + d_id, d)
         self.cls_tok = nn.Parameter(torch.randn(1, 1, d) * 0.02)
@@ -97,8 +98,8 @@ class Stage1NetV2(Stage1Net):
     """
 
     def __init__(self, vocab, d=256, layers=4, heads=8, d_local=64, d_id=32,
-                 dropout=0.1, d_score=128, n_patch=N_PATCH):
-        super().__init__(len(vocab), d, layers, heads, d_local, d_id, dropout, n_patch)
+                 dropout=0.1, d_score=128, n_patch=N_PATCH, d_pf=7):
+        super().__init__(len(vocab), d, layers, heads, d_local, d_id, dropout, n_patch, d_pf)
         del self.cls_head, self.pass_head
         C = len(vocab)
         member = torch.zeros(C, 4, N_UNIT)

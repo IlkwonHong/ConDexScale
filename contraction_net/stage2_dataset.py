@@ -25,13 +25,29 @@ from .stage1_dataset import (Stage1Dataset, N_UNIT, _LINK_UNIT, _LINK_NAMES)
 ROOT = Path(__file__).resolve().parents[1]
 UNITS = ["index", "middle", "ring", "little", "thumb", "palm"]
 RHO_REL, MARGIN_REL = 0.15, 0.05      # GT 탐색 반경 규칙 + 여유 마진 (명세 1.3)
+INTERP_ROOT = ROOT / "data/contraction_net/patch_interp3"   # patch_interp_weights 디스크 캐시
+
+
+def patch_interp_weights(pts, centers, k=3):
+    """점마다 가장 가까운 패치 중심 k개와 섞음 가중치 → (idx [P,k] int64, w [P,k] float32).
+
+    w_i ∝ 1/d_i − 1/d_{k+1} (≥0): 경계(d_A = d_B)에서 반반, 패치 중심에서 자기 패치로 수렴,
+    k번째 이웃이 바뀌는 지점에서도 가중치가 0이 되어 연속.
+    """
+    d = np.linalg.norm(pts[:, None] - centers[None], axis=-1)        # [P,C]
+    order = np.argsort(d, axis=1)[:, :k + 1]
+    dk = np.maximum(np.take_along_axis(d, order, 1), 1e-9)
+    w = np.maximum(1.0 / dk[:, :k] - 1.0 / dk[:, k:k + 1], 0.0)
+    w = w / np.maximum(w.sum(1, keepdims=True), 1e-12)
+    return order[:, :k].astype(np.int64), w.astype(np.float32)
 
 
 class Stage2Dataset(Stage1Dataset):
-    def __init__(self, *args, hm_target="onehot", gauss_sigma_rel=0.04, **kw):
+    def __init__(self, *args, hm_target="onehot", gauss_sigma_rel=0.04, patch_interp=False, **kw):
         super().__init__(*args, **kw)
         self.hm_target = hm_target
         self.gauss_sigma_rel = gauss_sigma_rel
+        self.patch_interp = patch_interp      # 점 특징에 가까운 패치 3개 토큰을 섞어 씀 (2026-10-17)
 
         # 파지별 히트맵 과제 목록: (unit_group[6], n_groups, anchor_pos[n,3])
         rec_dir = Path(kw.get("records_dir",
@@ -88,8 +104,11 @@ class Stage2Dataset(Stage1Dataset):
                 obj["pid"] = z["point_patch_id"].copy()
         pid = obj["pid"]
         scale = ts / r_obj
-        point_feat = np.concatenate(
-            [(obj["pts"] - obj["centers"][pid]) * scale, obj["nrm"]], 1).astype(np.float32)
+        parts_ = [(obj["pts"] - obj["centers"][pid]) * scale, obj["nrm"]]
+        if self.com_feat:
+            prel = (obj["pts"] - obj["com"]) * scale         # 무게중심 상대 (점 수준)
+            parts_ += [prel, np.linalg.norm(prel, axis=1, keepdims=True)]
+        point_feat = np.concatenate(parts_, 1).astype(np.float32)
 
         # 파티션(레코드) 추첨 — 학습은 무작위, 평가는 결정적
         tasks = self.hm_tasks[gid]
@@ -129,8 +148,22 @@ class Stage2Dataset(Stage1Dataset):
         out["hm_n_groups"] = torch.tensor(n_g, dtype=torch.long)
         out["hm_target"] = torch.from_numpy(hm_target)
         out["hm_mask"] = torch.from_numpy(hm_mask)
+        if self.fstats is not None:
+            m, sd = self.fstats["point_feat"]
+            point_feat = (point_feat - m) / sd
         out["point_feat"] = torch.from_numpy(point_feat)
         out["point_patch"] = torch.from_numpy(pid.astype(np.int64))
+        if self.patch_interp:
+            if "interp3" not in obj:      # 물체 캐시가 작아 매번 재계산되지 않도록 디스크 캐시 우선
+                f = INTERP_ROOT / self.obj_of[gid][0] / f"{self.obj_of[gid][1]}.npz"
+                if f.exists():
+                    with np.load(f) as z:
+                        obj["interp3"] = (z["idx"].astype(np.int64), z["w"])
+                else:
+                    obj["interp3"] = patch_interp_weights(obj["pts"], obj["centers"])
+            i3, w3 = obj["interp3"]
+            out["point_patch3"] = torch.from_numpy(i3)
+            out["point_patch3_w"] = torch.from_numpy(w3)
         if soft is not None:
             out["hm_soft"] = torch.from_numpy(soft)
         return out

@@ -44,6 +44,12 @@ def main():
     ap.add_argument("--lr", type=float, default=3e-4)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--hm-target", default="onehot", choices=["onehot", "gauss"])
+    ap.add_argument("--com-feat", action="store_true",
+                    help="무게중심 상대 특징 (패치 11·점 10차원)")
+    ap.add_argument("--feat-norm", action="store_true",
+                    help="특징 표준화 (feat_stats.json 기준 평균0·분산1)")
+    ap.add_argument("--patch-interp", action="store_true",
+                    help="점 특징에 가까운 패치 3개 토큰을 거리 가중으로 섞음 (경계 계단 제거)")
     ap.add_argument("--smoke", action="store_true")
     ap.add_argument("--out", default="checkpoints/stage2")
     args = ap.parse_args()
@@ -51,7 +57,8 @@ def main():
     out = ROOT / args.out
     out.mkdir(parents=True, exist_ok=True)
 
-    kw = dict(contact_geom=False, hm_target=args.hm_target)
+    kw = dict(contact_geom=False, hm_target=args.hm_target, com_feat=args.com_feat,
+              feat_norm=args.feat_norm, patch_interp=args.patch_interp)
     tr = Stage2Dataset(split="train", augment=True, **kw)
     va = Stage2Dataset(split="val", augment=False, **kw)
     if args.smoke:
@@ -68,7 +75,8 @@ def main():
     dl_va = DataLoader(va, batch_size=args.batch, num_workers=args.workers,
                        persistent_workers=pw)
 
-    model = Stage2Net(ds0.vocab).to(device)
+    model = Stage2Net(ds0.vocab, d_pf=11 if args.com_feat else 7,
+                      d_ptf=10 if args.com_feat else 6).to(device)
     print(f"파라미터 {sum(p.numel() for p in model.parameters())/1e6:.1f}M", flush=True)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=0.05)
     steps = max(1, len(dl_tr)) * args.epochs
