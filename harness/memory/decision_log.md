@@ -52,3 +52,11 @@ Template:
 - Evidence (paths / run IDs): scratchpad/2026-11-gate-diagnosis/, EXP-005/006 plan.md
 - What would change our mind: EXP-005 에서 데이터가 평평하면 생성 규모를 줄인다. EXP-006 에서 two_stage 의 ρ0 가 rho64 의 0.95배 이상이면 two_stage 로 시간을 줄인다.
 - Next action: 구현·연기 시험 → EXP-005, EXP-006 실행 → 결과 보고 후 연구자가 전량 재생성 방식을 정한다.
+
+- Date: 2026-11-21
+- Idea / Experiment ID: IDEA-001-imitate-verified-gt / EXP-007-net1-target-shape
+- Researcher decision: Net1 학습 부진의 원인을 가르기 위해 학습 목표 모양 세 가지((가) 점수 비례, (나) 0.95배 묶음, (다) 1등 원핫)를 데이터 25% 로 비교한다.
+- Rationale and rejected alternatives: Net1 이 검증 파지에서 빈도 규칙과 0.6~1.7%p 차이, 학습 파지에서도 4~7%p 만 높아 학습 자체가 안 되는 상태다 (upgrade_net1.md 1-1절). (다)는 (나)가 목표를 날카롭게 하는 효과와 동률을 봐주는 효과를 가르기 위해 Claude 가 추가 제안했고 연구자가 승인했다.
+- Evidence (paths / run IDs): upgrade_net1.md, scratchpad/exp006/net1_baselines.py, net1_train_fit.py, EXP-007 plan.md
+- What would change our mind: 셋 다 학습 파지에서 빈도 규칙 수준이면 목표 모양은 원인이 아니다.
+- Next action: 실행 → analysis.md → 정답 재생성 여부를 연구자가 다시 판단.

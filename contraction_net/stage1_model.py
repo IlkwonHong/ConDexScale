@@ -134,8 +134,14 @@ class Stage1NetV2(Stage1Net):
         return logits, self.reg_head(h), None
 
 
-def stage1_loss(logits, reg, pass_logits, batch, reg_weight=0.5, pass_weight=0.5):
-    """CE(soft target) + Huber 회귀 + BCE(클래스별 합격 확률). 지표도 함께 반환."""
+def stage1_loss(logits, reg, pass_logits, batch, reg_weight=0.5, pass_weight=0.5, target_mode="prop"):
+    """CE(soft target) + Huber 회귀 + BCE(클래스별 합격 확률). 지표도 함께 반환.
+
+    target_mode (파티션 분류 손실의 목표 모양, 2026-11 Net1 학습 부진 진단):
+      "prop"  = 기존. 점수 비례 분포에 대한 CE.
+      "set95" = 묶음 손실. 1등의 0.95배 이상인 파티션들의 확률 합 p_S 에 대해 −log p_S.
+      "top1"  = 1등 하나(원핫)에 대한 CE.
+    """
     total = logits.new_zeros(())
     metrics = {}
     for n in (3, 4):
@@ -144,12 +150,24 @@ def stage1_loss(logits, reg, pass_logits, batch, reg_weight=0.5, pass_weight=0.5
         if rows.any():
             lg = logits[rows].masked_fill(~v[rows], float("-inf"))
             logp = lg.log_softmax(-1)
-            ce = -(t[rows] * logp.masked_fill(~v[rows], 0.0)).sum(-1)
+            tr_ = t[rows]
+            best_ = tr_.max(-1, keepdim=True).values
+            if target_mode == "prop":
+                ce = -(tr_ * logp.masked_fill(~v[rows], 0.0)).sum(-1)
+            elif target_mode == "set95":
+                in_set = (tr_ >= 0.95 * best_) & v[rows] & (tr_ > 0)
+                ce = -torch.logsumexp(logp.masked_fill(~in_set, float("-inf")), dim=-1)
+            elif target_mode == "top1":
+                ce = -logp.gather(1, tr_.argmax(-1, keepdim=True))[:, 0]
+            else:
+                raise ValueError(target_mode)
             total = total + ce.mean()
             pred = lg.argmax(-1)
             metrics[f"top1_n{n}"] = (pred == t[rows].argmax(-1)).float().mean().item()
             metrics[f"pass_n{n}"] = (t[rows].gather(1, pred[:, None])[:, 0] > 0
                                      ).float().mean().item()
+            metrics[f"tol95_n{n}"] = (tr_.gather(1, pred[:, None])[:, 0] >= 0.95 * best_[:, 0] - 1e-12
+                                      ).float().mean().item()
             metrics[f"ce_n{n}"] = ce.mean().item()
             metrics[f"cnt_n{n}"] = int(rows.sum())   # 전역 가중 집계용 (배치 편향 방지)
         if pass_logits is not None:                     # v2 는 합격 헤드 없음

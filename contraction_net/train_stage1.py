@@ -58,6 +58,8 @@ def main():
     ap.add_argument("--train-frac", type=float, default=1.0,
                     help="학습 파지 중 물체 해시 기준 고정 부분집합 비율 (데이터 규모 시험, EXP-005). "
                          "부분집합은 중첩됨: 0.25 ⊂ 0.5 ⊂ 1.0, 시드와 무관")
+    ap.add_argument("--target-mode", default="prop", choices=["prop", "set95", "top1"],
+                    help="파티션 분류 손실의 목표 모양 (기본 prop = 기존)")
     ap.add_argument("--seed", type=int, default=None,
                     help="모델 초기값·배치 순서 시드 (None = 기존 동작, 고정 안 함)")
     args = ap.parse_args()
@@ -128,7 +130,7 @@ def main():
                      for k, v in batch.items()}
             with torch.amp.autocast(device, enabled=device == "cuda"):
                 logits, reg, pl = model(batch)
-                loss, _ = stage1_loss(logits, reg, pl, batch)
+                loss, _ = stage1_loss(logits, reg, pl, batch, target_mode=args.target_mode)
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.step(opt)
