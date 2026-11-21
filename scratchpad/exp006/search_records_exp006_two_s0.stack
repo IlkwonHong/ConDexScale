@@ -1,0 +1,70 @@
+Timeout (0:05:00)!
+Thread 0x00007119be258140 (most recent call first):
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/metric.py", line 281 in alpha_batched
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 88 in _rho_many
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 166 in _score_by_n
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 228 in run_shard
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 349 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 229 in run_module
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/scratchpad/exp006/traced_runner.py", line 10 in <module>
+Timeout (0:05:00)!
+Thread 0x00007119be258140 (most recent call first):
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/metric.py", line 288 in alpha_batched
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 88 in _rho_many
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 166 in _score_by_n
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 222 in run_shard
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 349 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 229 in run_module
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/scratchpad/exp006/traced_runner.py", line 10 in <module>
+Timeout (0:05:00)!
+Thread 0x00007119be258140 (most recent call first):
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/metric.py", line 281 in alpha_batched
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 88 in _rho_many
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 166 in _score_by_n
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 222 in run_shard
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 349 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 229 in run_module
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/scratchpad/exp006/traced_runner.py", line 10 in <module>
+Timeout (0:05:00)!
+Thread 0x00007119be258140 (most recent call first):
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/metric.py", line 281 in alpha_batched
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 88 in _rho_many
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 166 in _score_by_n
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 228 in run_shard
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 349 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 229 in run_module
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/scratchpad/exp006/traced_runner.py", line 10 in <module>
+Timeout (0:05:00)!
+Thread 0x00007119be258140 (most recent call first):
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/metric.py", line 288 in alpha_batched
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 88 in _rho_many
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 166 in _score_by_n
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 222 in run_shard
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 349 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 229 in run_module
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/scratchpad/exp006/traced_runner.py", line 10 in <module>
+Timeout (0:05:00)!
+Thread 0x00007119be258140 (most recent call first):
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/metric.py", line 288 in alpha_batched
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 88 in _rho_many
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 166 in _score_by_n
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 222 in run_shard
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 349 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 229 in run_module
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/scratchpad/exp006/traced_runner.py", line 10 in <module>
+Timeout (0:05:00)!
+Thread 0x00007119be258140 (most recent call first):
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/metric.py", line 281 in alpha_batched
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 88 in _rho_many
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_batched.py", line 166 in _score_by_n
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 228 in run_shard
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/contraction_gt/runner_multi.py", line 349 in <module>
+  File "<frozen runpy>", line 88 in _run_code
+  File "<frozen runpy>", line 229 in run_module
+  File "/home/robin/a_workspace/condex/.claude/worktrees/gt-v2-pilot/scratchpad/exp006/traced_runner.py", line 10 in <module>

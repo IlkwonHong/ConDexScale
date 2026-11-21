@@ -37,8 +37,8 @@ from .object_cache import load_samples
 from .search import SearchConfig, mu_tor_from_pad, _top_combos
 from .surface import _farthest_point_subsample
 from .units import enumerate_partitions, THUMB
-from .runner_batched import (CONTACT_ROOT, CACHE_ROOT, _alpha_many, _coarse_jobs,
-                             _refine_set, _score_by_n)
+from .runner_batched import (CONTACT_ROOT, CACHE_ROOT, _alpha_many, _rho_many, _coarse_jobs,
+                             _refine_set, _score_by_n, SCORE_DIMS)
 
 MAX_MODES = 3          # 저장할 서로 다른 배치 수 상한
 DIV_REL = 0.15         # 다른 배치 판정: 적어도 한 그룹에서 이 거리(·r_obj) 이상 차이
@@ -82,14 +82,14 @@ def _cond_jobs(samples, job):
     return combos, np.asarray(owner, np.int64)
 
 
-def _cond_table(job, ma_coarse):
+def _cond_table(job, ma_coarse, D=14):
     """첫 자리별 최선 짝 (조건 조합 + 같은 첫 자리의 거친 조합 중 최고) → (idx [8,4], min [8])."""
     best = {}
     cm = job["cond_alpha"].min(axis=1) if len(job["cond"]) else np.zeros(0)
     for c, a, f in zip(job["cond"], cm, job["cond_owner"]):
         if f not in best or a > best[f][1]:
             best[f] = (c, a)
-    for c, a in zip(job["combos"], ma_coarse):
+    for c, a in zip(job["combos"], ma_coarse if ma_coarse is not None else []):
         f = int(c[0])
         if f in best and a > best[f][1]:
             best[f] = (c, a)
@@ -101,15 +101,29 @@ def _cond_table(job, ma_coarse):
     return idx, mins
 
 
-def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0):
+def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0,
+              score="alpha", seed=0, out_subdir="search_records_multi", gid_list=None,
+              k_cand=None, k_cand_n4=None, refine_iters=1, skip_cond=False):
+    """score: "alpha"(기존) | "rho64"(전 단계 ρ0) | "two_stage"(거친 단계 α 로 거르고 다듬기·확정은 ρ0).
+    seed: 후보 줄이기·무작위 조합 씨앗 (EXP-002 의 주된 자리). gid_list: 처리할 grasp_id 집합(없으면 전체)."""
     cfg = SearchConfig()
+    cfg.seed = int(seed)
+    if k_cand:
+        cfg.k_candidates = int(k_cand)          # 팔마다 범위 안 후보 점 수 (기본 32)
+    if k_cand_n4:
+        cfg.k_candidates_n4 = int(k_cand_n4)    # 팔 4대 (기본 12)
+    s_coarse = "rho64" if score == "rho64" else "alpha"
+    s_fine = "alpha" if score == "alpha" else "rho64"
+    D = SCORE_DIMS[s_fine]
     mdir = Path(manifest_dir)
     rows = [l.split("\t") for l in (mdir / "pilot_manifest.tsv").read_text().splitlines()[1:]]
+    if gid_list is not None:
+        rows = [r for r in rows if f"{r[3]}#{r[4]}" in gid_list]
     rows = rows[first_row:]
     if total:
         rows = rows[:total]
     rows = rows[shard_idx::n_shards]
-    out_dir = mdir / "search_records_multi"
+    out_dir = mdir / out_subdir
     out_dir.mkdir(exist_ok=True)
 
     done_gids = set()
@@ -146,7 +160,9 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0):
             times=json.dumps(times), n_grasp=n_grasp, n_fail=n_fail,
             config=json.dumps(dict(MAX_MODES=MAX_MODES, DIV_REL=DIV_REL, PREFILTER=PREFILTER,
                                    KEEP_FRAC=KEEP_FRAC, FLOOR=FLOOR, N_FIRST=N_FIRST,
-                                   TOP_COND=TOP_COND)),
+                                   TOP_COND=TOP_COND, score=score, seed=int(seed),
+                                   k_cand=cfg.k_candidates, k_cand_n4=cfg.k_candidates_n4,
+                                   refine_iters=int(refine_iters), skip_cond=bool(skip_cond))),
         )
         part_idx += 1
         recs_out = {k: [] for k in recs_out}
@@ -183,7 +199,7 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0):
 
         # ---- 거친 단계 (같음) + 배치 고르기 + 거친 단계 표 ----
         t0 = time.time()
-        _score_by_n(named, cfg, "combos")
+        _score_by_n(named, cfg, "combos", s_coarse)
         sub = []                                   # 다듬을 배치들: (g, 배치 작업)
         for g, j in named:
             ma = j["combos_alpha"].min(axis=1)
@@ -196,23 +212,56 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0):
                          c_combo=j["combos"][i], c_alpha=j["combos_alpha"][i], c_min=ma[i])
                 j["modes"].append(m)
                 sub.append((g, m))
+        if score == "two_stage" and sub:
+            # 고른 거친 배치를 ρ0 로 다시 채점 (다듬기 결과와 같은 잣대로 비교하기 위함)
+            for _g, m in sub:
+                m["c1"] = m["c_combo"][None, :]
+            _score_by_n(sub, cfg, "c1", s_fine)
+            for _g, m in sub:
+                m["c_alpha"] = m["c1_alpha"][0]
+                m["c_min"] = float(m["c_alpha"].min())
         times["coarse"] += time.time() - t0
 
         # ---- 다듬기: 배치마다, N 별 일괄 ----
         t0 = time.time()
         for g, m in sub:
             m["ref"] = _refine_set(g["samples"], m, m["c_combo"], cfg)
-        _score_by_n(sub, cfg, "ref")
+        _score_by_n(sub, cfg, "ref", s_fine)
+        # 다듬기 반복 (refine_iters > 1): 새 최선이 나온 배치만 그 자리 주변을 다시 다듬는다.
+        # 채점한 조합은 누적해 두고 확정 단계가 그중 최선을 고른다.
+        if refine_iters > 1:
+            for g, m in sub:
+                m["_best"] = float(max(m["c_min"], m["ref_alpha"].min(axis=1).max()))
+                m["_center"] = m["ref"][int(m["ref_alpha"].min(axis=1).argmax())]
+                m["_active"] = m["ref_alpha"].min(axis=1).max() > m["c_min"] + 1e-9
+            for _it in range(refine_iters - 1):
+                act = [(g, m) for g, m in sub if m["_active"]]
+                if not act:
+                    break
+                for g, m in act:
+                    m["ref2"] = _refine_set(g["samples"], m, m["_center"], cfg)
+                _score_by_n(act, cfg, "ref2", s_fine)
+                for g, m in act:
+                    mn = m["ref2_alpha"].min(axis=1)
+                    m["ref"] = np.concatenate([m["ref"], m["ref2"]])
+                    m["ref_alpha"] = np.concatenate([m["ref_alpha"], m["ref2_alpha"]])
+                    if mn.max() > m["_best"] + 1e-9:
+                        m["_best"], m["_center"] = float(mn.max()), m["ref2"][int(mn.argmax())]
+                    else:
+                        m["_active"] = False
         times["refine"] += time.time() - t0
 
         # ---- 첫 자리 조건 표 ----
         t0 = time.time()
-        withc = [(g, j) for g, j in named if len(j["cond"])]
-        _score_by_n(withc, cfg, "cond")
+        withc = [] if skip_cond else [(g, j) for g, j in named if len(j["cond"])]
+        _score_by_n(withc, cfg, "cond", s_fine)
         for g, j in named:
-            if not len(j["cond"]):
-                j["cond_alpha"] = np.zeros((0, 14))
-            j["cond_tab"] = _cond_table(j, j["ma_coarse"])
+            if skip_cond or not len(j["cond"]):
+                j["cond"] = np.zeros((0, j["n"]), np.int64)
+                j["cond_owner"] = np.zeros(0, np.int64)
+                j["cond_alpha"] = np.zeros((0, D))
+            # two_stage 는 거친 단계 점수가 α 라 ρ0 와 섞지 않는다
+            j["cond_tab"] = _cond_table(j, j["ma_coarse"] if score != "two_stage" else None)
         times["cond"] += time.time() - t0
 
         # ---- 확정: 배치별 최종 → 중복 제거 → 품질 필터 → μ 재평가(최선만) ----
@@ -248,7 +297,7 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0):
                 entries = [(g["samples"], j["final_combo"][None, :],
                             mu_tor_from_pad(j["pad_rel"] * g["samples"].r_obj,
                                             mu_val, cfg.hertz_frac)) for g, j in group]
-                alpha = _alpha_many(entries, cfg)
+                alpha = (_alpha_many if s_fine == "alpha" else _rho_many)(entries, cfg)
                 for k_, (_g, j) in enumerate(group):
                     j["alpha_" + mu_key] = alpha[k_]
         times["mu_sweep"] += time.time() - t0
@@ -285,7 +334,7 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0):
             arr_out["anchor_idx"].append(np.pad(np.asarray(combo, np.int16), (0, pad),
                                                 constant_values=-1))
             mi = np.full((MAX_MODES, 4), -1, np.int16)
-            ma_ = np.full((MAX_MODES, 14), np.nan, np.float32)
+            ma_ = np.full((MAX_MODES, D), np.nan, np.float32)
             mp = np.full((MAX_MODES, 4), np.nan, np.float32)
             ms = np.full(MAX_MODES, -1, np.int8)
             for k, (c, a, st) in enumerate(j["kept"]):
@@ -316,7 +365,22 @@ def run_shard(shard_idx, n_shards, total, manifest_dir, chunk=48, first_row=0):
 
 
 if __name__ == "__main__":
-    run_shard(int(sys.argv[1]), int(sys.argv[2]),
-              int(sys.argv[3]) or None, sys.argv[4],
-              int(sys.argv[5]) if len(sys.argv) > 5 else 48,
-              int(sys.argv[6]) if len(sys.argv) > 6 else 0)
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("shard", type=int); ap.add_argument("n_shards", type=int)
+    ap.add_argument("total", type=int); ap.add_argument("manifest_dir")
+    ap.add_argument("chunk", type=int, nargs="?", default=48)
+    ap.add_argument("first_row", type=int, nargs="?", default=0)
+    ap.add_argument("--score", default="alpha", choices=["alpha", "rho64", "two_stage"])
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--out-subdir", default="search_records_multi")
+    ap.add_argument("--gid-list", default=None, help="grasp_id 한 줄에 하나인 파일")
+    ap.add_argument("--k-cand", type=int, default=None, help="팔마다 후보 점 수 (기본 32)")
+    ap.add_argument("--k-cand-n4", type=int, default=None, help="팔 4대 후보 점 수 (기본 12)")
+    ap.add_argument("--refine-iters", type=int, default=1, help="다듬기 반복 상한 (기본 1 = 기존)")
+    ap.add_argument("--skip-cond", action="store_true", help="첫 자리 조건 표 단계 생략")
+    a = ap.parse_args()
+    gl = set(Path(a.gid_list).read_text().split()) if a.gid_list else None
+    run_shard(a.shard, a.n_shards, a.total or None, a.manifest_dir, a.chunk, a.first_row,
+              score=a.score, seed=a.seed, out_subdir=a.out_subdir, gid_list=gl,
+              k_cand=a.k_cand, k_cand_n4=a.k_cand_n4, refine_iters=a.refine_iters, skip_cond=a.skip_cond)

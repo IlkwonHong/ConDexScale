@@ -57,6 +57,41 @@ def _alpha_many(entries, cfg):
     return out
 
 
+def _rho_many(entries, cfg):
+    """_alpha_many 와 같은 입력 → 정점 64개 방향의 여유 [ΣC,64] numpy (EXP-006).
+
+    논문 III-B 의 ℓ∞ 여유 ρ 를 명목 렌치 0 (질량 무관 GT, D5) 으로 푼 것:
+    metric.compute_rho(w_req=0) 와 같은 방향 규약 dirs = −v (v ∈ {−1,+1}^6) 이고,
+    ρ0 = 행별 최솟값. 정점 수 때문에 호출당 조합 상한을 14/64 로 줄인다.
+    """
+    from .metric import vertex_direction_set
+    dtype = torch.float64
+    pos_l, nrm_l, mu_l = [], [], []
+    for samples, combos, mu_tor in entries:
+        pos_l.append((samples.points[combos] - samples.com) / samples.r_obj)
+        nrm_l.append(samples.normals[combos])
+        mu_l.append(np.full(len(combos), mu_tor / samples.r_obj))
+    pos = np.concatenate(pos_l)
+    nrm = np.concatenate(nrm_l)
+    mu = np.concatenate(mu_l)
+    out = np.empty((len(pos), 64))
+    sub = max(1, GPU_SUB * 14 // 64)
+    verts = vertex_direction_set(dtype, cfg.device)
+    for s in range(0, len(pos), sub):
+        p = torch.as_tensor(pos[s:s + sub], dtype=dtype, device=cfg.device)
+        n = torch.as_tensor(nrm[s:s + sub], dtype=dtype, device=cfg.device)
+        m = torch.as_tensor(mu[s:s + sub], dtype=dtype, device=cfg.device)
+        m = m.unsqueeze(-1).expand(-1, p.shape[1])
+        com = torch.zeros(len(p), 3, dtype=dtype, device=cfg.device)
+        W = ray_wrench_matrix(p, n, com, 1.0, cfg.mu_t, m)
+        dirs = (-verts).unsqueeze(0).expand(len(p), -1, -1)
+        out[s:s + sub] = alpha_batched(W, dirs).cpu().numpy()
+    return out
+
+
+SCORE_DIMS = {"alpha": 14, "rho64": 64}
+
+
 def _coarse_jobs(samples, patches, partitions, cfg):
     """search_grasp 의 coarse 준비부와 동일 — 작업 목록만 반환."""
     jobs = []
@@ -114,8 +149,13 @@ def _refine_set(samples, job, best_combo, cfg):
     return combos
 
 
-def _score_by_n(named_jobs, cfg, combo_key):
-    """named_jobs: (grasp_ctx, job) 목록 → 같은 N 끼리 묶어 일괄 α, job 에 결과 저장."""
+def _score_by_n(named_jobs, cfg, combo_key, score="alpha"):
+    """named_jobs: (grasp_ctx, job) 목록 → 같은 N 끼리 묶어 일괄 채점, job 에 결과 저장.
+
+    score="alpha": 14방향 α [C,14] (기존). score="rho64": 정점 64개 여유 [C,64] (min = ρ0).
+    결과 키 이름은 둘 다 combo_key + "_alpha" (호출부의 .min(axis=1) 선택 규칙을 그대로 쓰기 위함).
+    """
+    score_fn = {"alpha": _alpha_many, "rho64": _rho_many}[score]
     for n in (2, 3, 4):
         group = [(g, j) for g, j in named_jobs if j["n"] == n]
         if not group:
@@ -123,7 +163,7 @@ def _score_by_n(named_jobs, cfg, combo_key):
         entries = [(g["samples"], j[combo_key],
                     mu_tor_from_pad(j["pad_rel"] * g["samples"].r_obj,
                                     cfg.mu_t, cfg.hertz_frac)) for g, j in group]
-        alpha = _alpha_many(entries, cfg)
+        alpha = score_fn(entries, cfg)
         ofs = 0
         for (_g, j), (_s, combos, _m) in zip(group, entries):
             j[combo_key + "_alpha"] = alpha[ofs:ofs + len(combos)]
