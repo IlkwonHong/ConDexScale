@@ -291,3 +291,16 @@ dataset/data_
 dataset/data_/
 !dataset/data/
 !dataset/data/**
+
+# Simulator log (MuJoCo writes this automatically)
+MUJOCO_LOG.TXT
+
+# Experiment result data (regenerable, some files are hundreds of MB)
+*.pkl
+*.npz
+
+# Generated meshes in scratchpad (regenerable)
+scratchpad/*_meshes/
+
+# Zip archives
+*.zip
